@@ -1,3 +1,4 @@
 *.o
 *.obj
-example/Gen*
+*.exe
+example/*Gen*
