@@ -15,6 +15,9 @@ The actual current implementation is in C++, but I was using perl before.  So an
 I only ever build from the root of the src tree:
     cd examples;
     build A.o;
+    build main.o;
+    build main.exe;
+    make clean;
 
 This leads to issues like how includes.pm only works in current directory.  Oops.
 

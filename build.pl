@@ -1,4 +1,4 @@
-our $VERSION = "4";
+our $VERSION = "4.5";
 
 use strict;
 use warnings FATAL => qw(uninitialized);
@@ -22,7 +22,7 @@ my $SRC_EXT = 'SRC'; # generic marker b/c of list of possible exts
 my @GEN_QUEUE;
 my @DEP_QUEUE;
 
-my %GENERATED;
+#my %GENERATED;
 my %EXISTS;
 
 #my %GEN_DONE;
@@ -30,39 +30,16 @@ my %EXISTS;
 
 my $target = shift or die "Need target";
 
-# convert target to obj
-my $isExec;
-my $obj;
+my $isExec = 0;
 if ($target =~ /^([\w\/]+)(\.exe)?$/) {
-    $obj = "$1.$OBJ_EXT";
     $isExec = 1;
-} elsif ($target =~ /^([\w\/]+)\.$OBJ_EXT$/) {
-    $obj = "$1.$OBJ_EXT";
-    $isExec = 0;
-} else {
-    die "Don't know what to do with target '$target'";
 }
 
-#enqueue($obj);
-enqueueDep($obj);
-my %genDone;
+processDep($target);
 my %depDone;
-while (@GEN_QUEUE or @DEP_QUEUE) {
-    #my $x;
-    #while ($x = shift @GEN_QUEUE) { processGen($x); }
-    #while ($x = shift @DEP_QUEUE) { processDep($x); }
-
+my %genDone;
+while (@DEP_QUEUE or @GEN_QUEUE) {
     my @q;
-
-    @q = @GEN_QUEUE;
-    @GEN_QUEUE = ();
-    for my $x (@q) {
-        unless ($genDone{$x}) {
-            processGen($x);
-            $genDone{$x} = 1;
-        }
-    }
-
     @q = @DEP_QUEUE;
     @DEP_QUEUE = ();
     for my $x (@q) {
@@ -71,24 +48,22 @@ while (@GEN_QUEUE or @DEP_QUEUE) {
             $depDone{$x} = 1;
         }
     }
+    @q = @GEN_QUEUE;
+    @GEN_QUEUE = ();
+    for my $x (@q) {
+        unless ($genDone{$x}) {
+            processGen($x);
+            $genDone{$x} = 1;
+        }
+    }
 }
-
-generateObj($obj) or die;
-
-
-#print "$target\n";
-#print "\n";
-#print "ALL_INCS\n"; printStuff(\%ALL_INCS);
-#print "ALL_SRCS\n"; printStuff(\%ALL_SRCS);
-#print "ALL_OBJS\n\t" . join("\n\t", keys %ALL_OBJS);
-#print "\n";
-
+processGen($target);
 exit;
 
 # some wasted effort here because most places this is called already have 'exists' info, but don't pass it. so either those places don't need it or they could pass it here.  not sure it's worth adapting this sub to accept both types because it would probably just be more confusing. not like '-f' is a huge timesink (is it?)
 sub enqueue {
     for (@_) {
-        if (-f) {
+        if (fileExists($_)) {
             enqueueDep($_);
         } else {
             enqueueGen($_);
@@ -142,7 +117,7 @@ sub processGen {
             }
         }
     } elsif (isObj($x)) {
-        if (-f $x or generateObj($x)) {
+        if (fileExists($x) or generateObj($x)) {
             enqueueDep($x);
         } else {
             printError("does not exist: $x\n");
@@ -156,6 +131,10 @@ sub processDep {
     my $x = shift;
     printDebug("processDep: $x\n");
     if (isHdr($x)) {
+        unless (fileExists($x)) {
+            enqueueGen($x);
+            return;
+        }
         my $incs = includes::find($x);
         enqueue(keys %$incs);
         if ($isExec) {
@@ -168,17 +147,23 @@ sub processDep {
             }
         }
     } elsif (isSrc($x)) { # shouldn't be a need to handle .SRC, as the actual file should have already been generated at this point
+        unless (fileExists($x)) {
+            enqueueGen($x);
+            return;
+        }
         my $incs = includes::find($x);
         enqueue(keys %$incs);
-        my $obj;
-        for my $e (@SRC_EXTS) {
-            my $tmp = $x;
-            if ($tmp =~ s/\.$e$/\.$OBJ_EXT/) {
-                $obj = $tmp;
-                last;
+        if ($isExec) { # not sure, just getting rid of it for obj initial target
+            my $obj;
+            for my $e (@SRC_EXTS) {
+                my $tmp = $x;
+                if ($tmp =~ s/\.$e$/\.$OBJ_EXT/) {
+                    $obj = $tmp;
+                    last;
+                }
             }
+            enqueue($obj);
         }
-        enqueue($obj);
     } elsif (isObj($x)) {
         my $src = $x =~ s/\.$OBJ_EXT$/\.$SRC_EXT/r;
         enqueue($src);
@@ -210,7 +195,7 @@ sub isObj {
 sub generateInc {
     if (my $x = _copy_gen(@_)) {
         $x =~ s/\..+$//;
-        $EXISTS{$x}{inc} = 1;
+        $EXISTS{$x}->{HDR} = 'generated';
         return 1;
     }
     return 0;
@@ -219,7 +204,7 @@ sub generateInc {
 sub generateSrc {
     if (my $x = _copy_gen(@_)) {
         $x =~ s/\..+$//;
-        $EXISTS{$x}{src} = 1;
+        $EXISTS{$x}->{SRC} = 'generated';
         return 1;
     }
     return 0;
@@ -238,32 +223,20 @@ sub _copy_gen {
     }
 }
 
-#sub generateSrc_handlesExts {
-#    die unless @_ == 1;
-#    my $file = shift;
-#    unless ($file =~ s/\.$SRC_EXT$//) {
-#        #die "Expected *.$SRC_EXT but got $file";
-#        confess("Expected *.$SRC_EXT but got $file");
-#    }
-#    for my $ext (@SRC_EXTS) {
-#        my $src = "$file.$ext";
-#        if (copy("gen/$src", $src)) {
-#            printInfo("generated $src\n");
-#            return $src;
-#        }
-#    }
-#    printDebug("failed to generate $file (@SRC_EXTS): $!\n");
-#    return undef;
-#}
-
 sub generateObj {
     my $x = shift;
-    $x =~ s/\.$OBJ_EXT$// or die "Doesn't have obj ext: '$x'";
-    my $src = $GENERATED{$x}{src} or confess();
-    #print "GENERATED\n" . Dumper(\%GENERATED) . "\n";
-    #exit; #XXX
+    my $base = $x =~ s/\.$OBJ_EXT$//r or die "Doesn't have obj ext: '$x'";
+    my $src;
+    for my $e (@SRC_EXTS) {
+        my $tmp = "$base.$e";
+        if (fileExists($tmp)) {
+            $src = $tmp;
+            last;
+        }
+    }
+    unless ($src) { confess(); }
 
-    my $cmd = "cl /nologo /c $src";
+    my $cmd = "cl /nologo /c /Fo$x $src";
     printDebug("$cmd\n");
     if (system($cmd)) {
         printError("generateObj: command failed: '$cmd'\n");
@@ -301,13 +274,32 @@ sub srcsE {
 
 sub fileExists {
     my $x = shift;
+    my ($base, $type) = basetype($x);
     if (-f $x) {
-        $EXISTS{$x} = 1;
+        $EXISTS{$base}->{$type} = 'alreadyExisted';
         return 1;
     } else {
-        if (exists $EXISTS{$x}) { confess(); } # this should only have existant files in it
+        #doesn't work with placeholder 'SRC' ofc #if (exists $EXISTS{$base}{$type}) { confess(); } # this should only have existant files in it
         return 0;
     }
+}
+
+sub basetype {
+    my $x = shift;
+    unless ($x =~ /(.+)\.(.+)$/) {
+        confess("failed to determine basetype for '$x'");
+    }
+    my $base = $1;
+    my $ext = $2;
+    my $type;
+    if ($ext eq $HDR_EXT) {
+        $type = 'HDR';
+    } elsif ($ext eq $OBJ_EXT) {
+        $type = 'OBJ';
+    } elsif (grep {$ext eq $_} @SRC_EXTS) {
+        $type = 'SRC';
+    }
+    return ($base, $type);
 }
 
 sub printError {
@@ -322,46 +314,4 @@ sub printDebug {
     if (DEBUG) { print STDOUT '['.NAME."][debug] @_"; }
 }
 
-# "blind" meaning just directly convert, don't check if it exists
-#sub srcToObjsBlind {
-#    my @objs;
-#    for my $s (@_) {
-#        my $o = $s;
-#        for my $e (@SRC_EXTS) {
-#            $o =~ s/\.$e$/\.$OBJ_EXT/;
-#        }
-#        push @objs, $o;
-#    }
-#    return @objs;
-#}
-
-# merge src into dest, modifying dest
-#sub mergeHashes {
-#    my ($dest, $src) = @_;
-#    while (my ($k, $v) = each %$src) {
-#        # being strict about this so I can tell if something weird is going on
-#        # this is how you would do it if you didn't care about value overrides.  this syntax takes the values from the last hash in the list.
-#        # %ALL_INCS = (%ALL_INCS, %$incsFromSrc);
-#        if (exists $dest->{$k} and $dest->{$k} != $v) {
-#            print STDERR "Error: mergeHashes: $k already exists in destination hash: dest = " . $dest->{$k} . ", src = $v\n";
-#            exit;
-#        }
-#        $dest->{$k} = $v;
-#    }
-#}
-
-#sub printDebugHA {
-#    my $front = shift;
-#    my $desc = shift;
-#    printDebug("$front " . scalar(@_) . " $desc: " . join(' ',sort(@_)) . "\n");
-#}
-
-#sub printStuff {
-#    my ($href) = @_;
-#    while (my ($name, $exists) = each %$href) {
-#        printf "\t%-15s", $name;
-#        unless ($exists) { print " [missing]"; }
-#        print "\n";
-#    }
-#}
 
