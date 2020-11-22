@@ -1,7 +1,19 @@
+#### v3
 v3.pl does gen include redep, but src gen redep should be able to trigger more inc gen, but it doesn't. similar issue goes to obj as well. I think I need to break up 'doThings' more and not call that whole thing and instead just do passes in a while loop until there's nothing left to be done. see v4.pl
 
+#### v4
 v4.pl made some good progress with depencies vs generation, and what needs to be done for each file type. but it doesn't work for the initial obj.  main.o needs main.c but it tries to gen main.o and then doesn't know main.c.  and I don't have the information about what other objects are needed for linking main.  like I have the concept to go generate them and/or parse their dependencies, but I don't store information about how I got there.  so then when I go to generate the main, I don't know what to use. for v5 I want to restructure the data so that I can come back at the end and say "link /o main.exe main.o A.o B.o ...".
 
+#### v4.5
 I went back to v4 because v5 was too much change.  See v4.5.  It can build main.o.  But I am not super confident in the build order and iteration (dep, gen).  Mainly all I did was put dep first so that it wouldn't try to immediately create main.o.  Does make sense to figure out as many dependencies as possible before trying to generate.  But seems like it should be more direct, like "file X still needs file Y, so we won't try to generate it yet, and also let's go try to make file Y".  TODO: exe
 
+#### v6
 v6 is v4.5 but with exe.  Note: when there is a .c target, it generates the includes. that doesn't really make sense.
+
+one issue I'm having is that it's making main.o too early.  I changed it to do all the deps first, but now since the gens aren't ordered by dep, it's just making main.o before anything else.  I could sort the gens to do hdr>src>obj>exe.  I will try that first.  But it doesn't feel like a full solution.  
+
+I fixed v6 to work for exe.  I did this by sorting GEN_QUEUE hdr>src>obj>exe and by only marking dependencies as processed when processDep returned true, which I also had to go add.  In a case where the file doesn't exist, processDep needs to enqueue it for gen and return 0.  I don't like a few things:
+- processDep enqueing stuff for gen - would rather return something or check if it exists first.
+- when linking the exe, I just do "link *.o".  not a good idea (different directories, objs that just happen to be in the directory, etc).
+
+for v7 I want to actually keep track of dependencies.  main loop will be able to see what is waiting for what (instead of just sorting by filetype and generating everything, though that honestly seems to work ok in my case).  also when linking will be able to specify exact objs.
