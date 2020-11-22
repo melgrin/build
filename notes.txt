@@ -1,0 +1,1 @@
+v3.pl does gen include redep, but src gen redep should be able to trigger more inc gen, but it doesn't. similar issue goes to obj as well. I think I need to break up 'doThings' more and not call that whole thing and instead just do passes in a while loop until there's nothing left to be done. see v4.pl
