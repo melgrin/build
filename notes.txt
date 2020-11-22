@@ -17,3 +17,14 @@ I fixed v6 to work for exe.  I did this by sorting GEN_QUEUE hdr>src>obj>exe and
 - when linking the exe, I just do "link *.o".  not a good idea (different directories, objs that just happen to be in the directory, etc).
 
 for v7 I want to actually keep track of dependencies.  main loop will be able to see what is waiting for what (instead of just sorting by filetype and generating everything, though that honestly seems to work ok in my case).  also when linking will be able to specify exact objs.
+
+#### v7
+I mentioned this earlier but I am also doing .c deps wrong.  the same issue extends to exe deps, but it's just hidden by isExec and explicit call to processGen($target) at the end of main.  basically it's a one-step-removed depenency.  like obj depends on hdrs via src, but right now I'm saying src depends on hdr.  test case:
+> v7 gen.c # should only create gen.c, not gen.h
+> v7 gen.o # should create gen.c and gen.h
+
+the chain backwards thing that happens for exes needing objs from srcs of hdrs doesn't happen for objs too.  I said that earlier.  Not sure what I was thinking.
+
+why doesn't v7 discover that main.exe depends on B.o?
+
+backing out the obj after failing to gen the src in the context of exe link dep is hard.  I think I had a pretty good strategy several versions ago.  even though if($isExec) all over the place is ugly, that's what I need to do.  Mayybe I can make the flag not global, but not sure it matters.  But I'm having a really hard time figuring out a relatively general way to maybe need to make an obj based on a src that's maybe generated that's also maybe nonexistent despite there being a header (which could also maybe be generated).

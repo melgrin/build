@@ -1,4 +1,4 @@
-our $VERSION = "6";
+our $VERSION = "7";
 use strict;
 use warnings FATAL => qw(uninitialized);
 use File::Basename qw(basename);
@@ -24,100 +24,398 @@ my %SORT_ORDER = (HDR=>0, SRC=>1, OBJ=>2, EXE=>3);
 my @GEN_QUEUE;
 my @DEP_QUEUE;
 
-#my %GENERATED;
-my %EXISTS;
+my %ATTEMPTED_GEN;
 
-#my %GEN_DONE;
-#my %DEP_DONE;
+my %EXISTS;
 
 my $target = shift or die "Need target";
 
 my $isExec = 0;
-#if ($target =~ /^([\w\/]+)(\.exe)?$/) {
-#    $isExec = 1;
-#}
 
-processDep($target);
-my %depDone;
-my %genDone;
+my $blah_depth = 0;
 
-#while (@DEP_QUEUE or @GEN_QUEUE) {
-#    my @q;
-#    @q = @DEP_QUEUE;
-#    @DEP_QUEUE = ();
-#    for my $x (@q) {
-#        unless ($depDone{$x}) {
-#            processDep($x);
-#            $depDone{$x} = 1;
+
+# v7
+while (0) {
+    # for each target
+    # if the target does not exist
+    #   if all of its dependencies exist
+    #     generate it or die
+    #   else
+    #     mark each missing dependency as "need to generate" (add them as targets)
+    # else (the target has been generated)
+    #   if it has not been processed for dependencies
+    #       process it for dependencies
+    #
+    #
+}
+
+my %DEPENDENCIES;
+# so you know what targets need to have their dependencies reprocessed after you generate something (key = just generated)
+my %WHO_DEPENDS_ON;
+
+my $ITERATION = 0;
+
+
+blah_v2($target);
+
+exit;
+
+updateGlobalDeps($target, processDependencies($target));
+
+printGlobalDeps_iter();
+
+#my $done = 0;
+#while (not $done) {
+#    $ITERATION++;
+#    print "\niteration $ITERATION\n";
+#    $done = 1;
+#    for my $dep (keys %{$DEPENDENCIES{$target}}) {
+#        if (not -f $dep) {
+#            $done = 0;
+#            generate($dep) or die "failed to generate $dep" . ($!?": $!":'');
+#            for my $f (keys %{$WHO_DEPENDS_ON{$dep}}) {
+#                updateGlobalDeps($f, processDependencies($f));
+#            }
 #        }
 #    }
-#    @q = @GEN_QUEUE;
-#    @GEN_QUEUE = ();
-#    for my $x (@q) {
-#        unless ($genDone{$x}) {
-#            processGen($x);
-#            $genDone{$x} = 1;
-#        }
-#    }
 #}
 
-while (@DEP_QUEUE or @GEN_QUEUE) {
-    # dep prio > gen prio
-    if (@DEP_QUEUE == 0) {
-        my $x = shift @GEN_QUEUE;
-        unless ($genDone{$x}) {
-            processGen($x);
-            $genDone{$x} = 1;
-        }
-    } else {
-        my $x = shift @DEP_QUEUE;
-        unless ($depDone{$x}) {
-            if (processDep($x)) {
-                # setting this conditionally (along with returning 0 from processDep where appropriate) fixed the issue where GenIncGenSrc.h deps wouldn't be reprocessed. not 100% confident that the item's dependencies will be reprocessed though.  it's kind of weird to return 0 from processDep and assume that the target will be generated.  maybe I'm overthinking it though.
-                $depDone{$x} = 1;
+#my $done = 0;
+while (not allDepsExist($target)) {
+    $ITERATION++;
+    print "\niteration $ITERATION\n";
+    #$done = 1;
+    for my $dep (keys %{$DEPENDENCIES{$target}}) {
+
+        if (not -f $dep) {
+            updateGlobalDeps($dep);
+            if (allDepsExist($dep)) {
+                generate($dep) or die "failed to generate $dep" . ($!?": $!":'');
+                for my $f (keys %{$WHO_DEPENDS_ON{$dep}}) {
+                    updateGlobalDeps($f);
+                }
             }
         }
+
+        #if (not -f $dep) {
+        #    generate($dep) or die "failed to generate $dep" . ($!?": $!":'');
+        #    for my $f (keys %{$WHO_DEPENDS_ON{$dep}}) {
+        #        updateGlobalDeps($f, processDependencies($f));
+        #    }
+        #}
+
+        #updateGlobalDeps($dep, processDependencies($dep));
+        #if (allDepsExist($dep)) {
+        #    generate($dep) or die "failed to generate $dep" . ($!?": $!":'');
+        #    for my $f (keys %{$WHO_DEPENDS_ON{$dep}}) {
+        #        updateGlobalDeps($f, processDependencies($f));
+        #    }
+        #} else {
+        #    $done = 0;
+        #}
+    }
+
+    #updateGlobalDeps($target, processDependencies($target));
+}
+
+
+printGlobalDeps_iter();
+
+generate($target) or die "failed to generate $target" . ($!?": $!":'');
+
+exit;
+
+####
+
+sub allDepsExist {
+    my $x = shift;
+    if (DEBUG) { # just because it would otherwise be very simple
+        my @exist;
+        my @dontExist;
+        for (keys %{$DEPENDENCIES{$x}}) {
+            if (-f) { push @exist, $_; }
+            else { push @dontExist, $_; }
+        }
+        
+        my $allExist = (@dontExist == 0);
+        printDebug("allDepsExist($x): " . ($allExist?'true':'false') . ": exist = (@exist), dontExist = (@dontExist)\n");
+        return $allExist;
+    } else {
+        for (keys %{$DEPENDENCIES{$x}}) {
+            unless (-f) {
+                return 0;
+            }
+        }
+        return 1;
     }
 }
 
-print "loop done\n";
+sub updateGlobalDeps {
+    my $target = shift;
+    my @deps = @_ ? @_ : processDependencies($target);
+    my @newdeps;
+    for (@deps) {
+        # "unless exists" and $ITERATION is just for debug purposes, to see in which iteration something was discovered
+        unless (exists $DEPENDENCIES{$target}->{$_}) {
+            push @newdeps, $_;
+            $DEPENDENCIES{$target}->{$_} = $ITERATION;
+        }
+        unless (exists $WHO_DEPENDS_ON{$_}->{$target}) {
+            $WHO_DEPENDS_ON{$_}->{$target} = $ITERATION;
+        }
+    }
+    printDebug("updateGlobalDeps($target) += @newdeps\n");
+}
 
-processGen($target);
-exit;
+sub printGlobalDeps {
+    for (keys %DEPENDENCIES) {
+        print "DEPENDENCIES{$_}\n\t" . join("\n\t",keys %{$DEPENDENCIES{$_}}) . "\n";
+    }
+    for (keys %WHO_DEPENDS_ON) {
+        print "WHO_DEPENDS_ON{$_}\n\t" . join("\n\t",keys %{$WHO_DEPENDS_ON{$_}}) . "\n";
+    }
+}
 
+sub printGlobalDeps_iter {
+    _helpPrintHash('DEPENDENCIES', \%DEPENDENCIES);
+    _helpPrintHash('WHO_DEPENDS_ON', \%WHO_DEPENDS_ON);
+}
 
-# alt main loop to try in the future
-# this would have to be done with changes to 'process' subs so that they would
-# not enqueue anything.  this would do that instead.  not sure it would work,
-# but if it did, control flow might be more clear (mostly here instead of subs)
-#push @DEP_QUEUE, $target;
-#while (@DEP_QUEUE or @GEN_QUEUE) {
-#    # dep prio > gen prio
-#    if (@DEP_QUEUE == 0) {
-#        my $x = shift @GEN_QUEUE;
-#        unless ($genDone{$x}) {
-#            my $success = processGen($x);
-#            if ($success) {
-#                $genDone{$x} = 1;
-#            } else {
-#                die "Failed to generate $x"; # way more nuance to this depending on type
-#            }
-#        }
-#    } else {
-#        my $x = shift @DEP_QUEUE;
-#        unless ($depDone{$x}) {
-#            my $success = processDep($x);
-#            if ($success) {
-#                $depDone{$x} = 1;
-#                $depState{$x} = 'done';
-#            } else {
-#                push @DEP_QUEUE, $x; # push instead of unshift
-#
-#            }
-#        }
-#    }
-#}
+sub _helpPrintHash {
+    my ($name, $href) = @_;
+    for my $k (keys %{$href}) {
+        my @s;
+        while (my ($f,$i) = each %{$href->{$k}}) {
+            push @s, "$i $f";
+        }
+        print $name . "{$k}\n\t" . join("\n\t",@s) . "\n";
+    }
+}
 
+sub processDependencies {
+    my $target = shift;
+    my ($base, $type) = basetype($target);
+    my @deps;
+    if ($type eq 'OBJ') {
+        my $src = "$base.c"; # XXX src ext cheat
+        push @deps, $src;
+        #my @incs = grepIncludes($src);
+        if (-f $src) { # might be generated
+            my $incs = includes::find($src);
+            push @deps, keys %$incs;
+        }
+    } elsif ($type eq 'HDR' or $type eq 'SRC') {
+        # do these ever depend on anything? I guess once I get to .idl or corba stuff then it could. special gen rules. that is a ways off.
+    } elsif ($type eq 'EXE') {
+        my $obj = "$base.$OBJ_EXT";
+        push @deps, $obj;
+        my $src = "$base.c"; # XXX src ext cheat
+        if (-f $src) { # might be generated
+            my $incs = includes::find($src);
+            for (keys %$incs) {
+                # XXX XXX how do I remember the srcs that maybe exist and make them obj deps of the exe without requiring it or looping forever?
+                my ($base2, undef) = basetype($_);
+                push @deps, "$base2.$OBJ_EXT"; # FIXME a "soft" dependency, not sure how to handle it
+            }
+        }
+    } else {
+        die "script not done for $type files yet (target = $target)";
+    }
+    printDebug("processDependencies($target) = @deps\n");
+    return @deps;
+}
+
+sub blah {
+    my $x = shift;
+    $blah_depth++;
+    print "\n";
+    printDebug("blah($x) depth = $blah_depth\n");
+    updateGlobalDeps($x);
+    if (not -f $x and allDepsExist($x)) {
+        if (generate($x)) {
+            # not sure this is necessary, try using brain later to figure it out
+            for my $f (keys %{$WHO_DEPENDS_ON{$x}}) {
+                updateGlobalDeps($f);
+                # should this recursively update all WHO_DEPENDS_ON? seems like it should, but exe is getting correct updates anyway.
+            }
+        } elsif (not isExe($x)) {
+            # was die, reducing for now to see how it goes
+            # fail to make src is not really an issue for exe
+            # was trying to account for that with isExe but really need to know why I'm generating it (is parent exe, kind of)
+            print "Failed to generate $x";
+        }
+    } else {
+        for (keys %{$DEPENDENCIES{$x}}) {
+            blah($_); # TODO when this is done, should be able to generate $x
+        }
+    }
+    $blah_depth--;
+}
+
+sub blah_v2 {
+    my $x = shift;
+    $blah_depth++;
+    print "\n";
+    printDebug("enter blah_v2($x) depth = $blah_depth\n");
+    updateGlobalDeps($x);
+    #while (not allDepsExist($x)) {
+
+    #while (not allDepsAccountedFor($x)) {
+    #    for (keys %{$DEPENDENCIES{$x}}) {
+    #        blah_v2($_); # TODO when this is done, should be able to generate $x
+    #    }
+    #}
+
+    while (1) {
+        #my @notAccountedFor = depsNotAccountedFor($x);
+        #if (@notAccountedFor) {
+        #    for (@notAccountedFor) {
+        #        if ($ATTEMPTED_GEN{$_}) {
+        #            $ATTEMPTED_GEN{$x} = 1; # trying to back out the src/obj guess from link exe deps.  morale is low.
+        #        } else {
+        #            blah_v2($_);
+        #        }
+        #    }
+        #} else {
+        #    last;
+        #}
+
+        my @deps = keys %{$DEPENDENCIES{$x}};
+        my $allAccountedFor = 1;
+        for (@deps) {
+
+            if ($ATTEMPTED_GEN{$_} and type($_) eq 'SRC') {
+                $ATTEMPTED_GEN{$x} = 1; # trying to back out the src/obj guess from link exe deps.  morale is low.
+            }
+
+            unless (-f or $ATTEMPTED_GEN{$_}) {
+                $allAccountedFor = 0;
+                blah_v2($_);
+            }
+        }
+        if ($allAccountedFor) {
+            last;
+        }
+    }
+
+    if (not -f $x and not $ATTEMPTED_GEN{$x}) {
+        if (generate($x)) {
+            # not sure this is necessary, try using brain later to figure it out
+            for my $f (keys %{$WHO_DEPENDS_ON{$x}}) {
+                updateGlobalDeps($f);
+                # should this recursively update all WHO_DEPENDS_ON? seems like it should, but exe is getting correct updates anyway.
+            }
+        } else {
+            #TODO I tried more generic stuff above, but I think it failed.  want to try something more specific like this
+            # if WHO is only execs and this is src, just move on (like remove it from deps I guess?)
+            # actually going to try to just mark it as "attempted" generically because that might save some something or something
+            $ATTEMPTED_GEN{$x} = 1;
+        }
+    } else {
+        if (-f $x) {
+            printDebug("already exists: $x\n");
+        } elsif ($ATTEMPTED_GEN{$x}) {
+            printDebug("already failed gen: $x\n");
+        }
+    }
+    printDebug("exit blah_v2($x)\n");
+    $blah_depth--;
+}
+
+sub depsNotAccountedFor {
+    my $x = shift;
+    my @exist;
+    my @attempted;
+    my @rest;
+    for (keys %{$DEPENDENCIES{$x}}) {
+        # for now to see if this ever happens
+        if (-f and $ATTEMPTED_GEN{$_}) { die "allDepsAccountedFor: $_ both exists and attempted"; }
+        if (-f) { push @exist, $_; }
+        elsif ($ATTEMPTED_GEN{$_}) { push @attempted, $_; }
+        else { push @rest, $_; }
+    }
+    printDebug("depsNotAccountedFor($x): @rest (exists = (@exist), attempted = (@attempted))\n");
+    return @rest;
+}
+
+sub allDepsAccountedFor {
+    my $x = shift;
+    if (DEBUG) {
+        my @exist;
+        my @attempted;
+        my @rest;
+        for (keys %{$DEPENDENCIES{$x}}) {
+            # for now to see if this ever happens
+            if (-f and $ATTEMPTED_GEN{$_}) { die "allDepsAccountedFor: $_ both exists and attempted"; }
+            if (-f) { push @exist, $_; }
+            elsif ($ATTEMPTED_GEN{$_}) { push @attempted, $_; }
+            else { push @rest, $_; }
+        }
+        
+        my $all = (@rest == 0);
+        printDebug("allDepsAccountedFor($x): " . ($all?'true':'false') . ": exists = (@exist), attempted = (@attempted), rest = (@rest)\n");
+        return $all;
+    } else {
+        for (keys %{$DEPENDENCIES{$x}}) {
+            unless (-f or $ATTEMPTED_GEN{$_}) {
+                return 0;
+            }
+        }
+        return 1;
+    }
+}
+
+sub processDependencies_forLinking {
+    my $target = shift;
+    printDebug("processDependencies($target)\n");
+    my ($base, $type) = basetype($target);
+    my @deps;
+    if ($type eq 'OBJ') {
+        my $src = "$base.c"; # XXX src ext cheat
+        push @deps, $src;
+        #my @incs = grepIncludes($src);
+        if (-f $src) { # might be generated
+            my $incs = includes::find($src);
+            push @deps, keys %$incs;
+        }
+    } elsif ($type eq 'HDR' or $type eq 'SRC') {
+        # do these ever depend on anything? I guess once I get to .idl or corba stuff then it could. special gen rules. that is a ways off.
+    } elsif ($type eq 'EXE') {
+        my $obj = "$base.$OBJ_EXT";
+        push @deps, $obj;
+        my $src = "$base.c"; # XXX src ext cheat
+        #push @linkdeps, $src;
+        if (-f $src) { # might be generated
+            my $incs = includes::find($src);
+            for (keys %$incs) {
+                # XXX XXX how do I remember the srcs that maybe exist and make them obj deps of the exe without requiring it or looping forever?
+                my ($base2, undef) = basetype($_);
+                push @deps, "$base2.$OBJ_EXT"; # FIXME a "soft" dependency, not sure how to handle it
+            }
+        }
+    } else {
+        die "script not done for $type files yet (target = $target)";
+    }
+    return @deps;
+}
+
+sub generate {
+    my $x = shift;
+    #printDebug("generate($x)\n");
+    my (undef, $type) = basetype($x);
+    if ($type eq 'HDR') {
+        return generateInc($x);
+    } elsif ($type eq 'SRC') {
+        return generateSrc($x);
+    } elsif ($type eq 'OBJ') {
+        return generateObj($x);
+    } elsif ($type eq 'EXE') {
+        return generateExe($x);
+    } else {
+        die "Don't know how to generate '$x'";
+    }
+}
 
 
 
@@ -326,13 +624,13 @@ sub generateObj {
             last;
         }
     }
-    unless ($src) { confess(); }
+    unless ($src) { confess("ATTEMPTED_GEN:\n\t".join("\n\t",keys %ATTEMPTED_GEN)); }
 
     my $cmd = "cl /nologo /c /Fo$x $src";
     printDebug("$cmd\n");
     if (system($cmd)) {
         printError("generateObj: command failed: '$cmd'\n");
-        confess(getQueueInfo());
+        confess();
         #exit; # return 0 ?
     }
     return 1;
@@ -413,8 +711,32 @@ sub basetype {
         $type = 'SRC';
     } elsif (grep {$ext eq $_} @SRC_EXTS) {
         $type = 'SRC';
+    } elsif ($ext eq $EXE_EXT) {
+        $type = 'EXE';
     }
     return ($base, $type);
+}
+
+sub type {
+    my (undef, $type) = basetype($_[0]);
+    return $type;
+}
+
+sub grepIncludes {
+    my $file = shift;
+    my $in;
+    unless (open($in, "<$file")) {
+        printError("grepIncludes: $!: $file\n");
+        return ();
+    }
+    my @incs;
+    while (<$in>) {
+        if (/^\s*#\s*include\s+"(.+)"/) {
+            push @incs, $1;
+        }
+    }
+    close $in;
+    return @incs;
 }
 
 sub printError {
