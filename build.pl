@@ -1,49 +1,34 @@
-# v3
+our $VERSION = "4";
 
 use strict;
-use warnings;
+use warnings FATAL => qw(uninitialized);
 use File::Basename qw(basename);
 use File::Copy qw(copy);
-use lib "D:/dev/bld"; use includes;
+use FindBin;
+use lib "$FindBin::Bin";
+use Carp qw(confess);
+
+use includes;
+$includes::DIE_ON_MISSING = 0;
 
 use constant NAME => basename($0);
 use constant DEBUG => 1;
 
-my $HDR_EXT = 'h';
-my $OBJ_EXT = 'o';
+my $HDR_EXT = 'h'; # .hpp too? TODO .idl
+my $OBJ_EXT = 'o'; # .obj too?
 my @SRC_EXTS = qw/cpp c/;
 my $SRC_EXT = 'SRC'; # generic marker b/c of list of possible exts
 
-my %ALL_INCS;
-my %ALL_SRCS;
-my %ALL_OBJS;
+my @GEN_QUEUE;
+my @DEP_QUEUE;
 
-$includes::DIE_ON_MISSING = 0;
+my %GENERATED;
+my %EXISTS;
+
+#my %GEN_DONE;
+#my %DEP_DONE;
 
 my $target = shift or die "Need target";
-
-# convert target to obj
-# convert obj to src
-# find incs from src
-# if any incs do not exist on disk, need to generate them so add to some list
-# if it's an exec
-#     h -> c
-#     if c exists on disk
-#         find incs from c
-#         if any incs do not exist on disk, add them to "need to generate" list
-#         c -> o, add o to "need to generate"
-#     elsif c does not exist on disk
-#         check rules/makefiles/db to see if there's a way to make it
-#         if there is, add it to the "need to generate" list
-#         else die "No such file: $c";
-
-# any time a thing from the "need to generate" list is generated, need to rerun the relevant steps above
-#     h -> includes
-#     c -> if exec
-#              includes
-#              push @gen, $c
-
-# if I go only halfway and create makefiles instead of actually compiling, I can do it partially by assuming missing files have rules in independently-created makefiles.
 
 # convert target to obj
 my $isExec;
@@ -58,165 +43,189 @@ if ($target =~ /^([\w\/]+)(\.exe)?$/) {
     die "Don't know what to do with target '$target'";
 }
 
+#enqueue($obj);
+enqueueDep($obj);
+my %genDone;
+my %depDone;
+while (@GEN_QUEUE or @DEP_QUEUE) {
+    #my $x;
+    #while ($x = shift @GEN_QUEUE) { processGen($x); }
+    #while ($x = shift @DEP_QUEUE) { processDep($x); }
 
-doThing($obj);
-$ALL_OBJS{$obj} = 1; # add after call because it's used to prevent infinite recursion
+    my @q;
 
-#print "$target\nALL_INCS\n\t" . join("\n\t", keys %ALL_INCS) . "\nALL_OBJS\n\t" . join("\n\t", keys %ALL_OBJS) . "\n";
-
-print "$target\n";
-print "\n";
-print "ALL_INCS\n"; printStuff(\%ALL_INCS);
-print "ALL_SRCS\n"; printStuff(\%ALL_SRCS);
-print "ALL_OBJS\n\t" . join("\n\t", keys %ALL_OBJS);
-print "\n";
-
-print "\ntrying to generate missing files and account for their deps\n";
-# if any incs are missing, try to create them
-# if the create succeeds*, do the includes::find steps again (.o)
-# if the create succeeds*, do the src-derived includes and obj dep steps again (exec)
-# * "create succeeds" means that there was a rule to create it (and I guess that the commands used in the rule return success)
-while (my ($inc, $exists) = each %ALL_INCS) {
-    next if $exists;
-    next unless generateInc($inc);
-    $ALL_INCS{$inc} = 1;
-    printDebug("$inc <gen> start\n");
-    my $incsFromHdr = includes::find($inc);
-    printDebug("$inc <gen> " . scalar(keys %$incsFromHdr) . " includes: " . join(' ', sort(keys %$incsFromHdr)) . "\n");
-    mergeHashes(\%ALL_INCS, $incsFromHdr);
-    if ($isExec) {
-        my @srcs = srcsE(keys %$incsFromHdr);
-        printDebug("$inc <gen> <isExec> " . scalar(@srcs) . " srcs: " . join(' ', sort(@srcs)) . "\n");
-        # src-derived includes
-        for my $s (@srcs) {
-            mergeHashes(\%ALL_INCS, includes::find($s));
+    @q = @GEN_QUEUE;
+    @GEN_QUEUE = ();
+    for my $x (@q) {
+        unless ($genDone{$x}) {
+            processGen($x);
+            $genDone{$x} = 1;
         }
-        # src->obj deps
-        my @objs = srcToObjsBlind(@srcs);
-        printDebug("$inc <gen> <isExec> objs: @objs\n");
-        # not totally sure I should just do the exact same thing here
-        for (@objs) {
-            if (not exists $ALL_OBJS{$_}) {
-                $ALL_OBJS{$_} = 1;
-                doThing($_);
-            }
+    }
+
+    @q = @DEP_QUEUE;
+    @DEP_QUEUE = ();
+    for my $x (@q) {
+        unless ($depDone{$x}) {
+            processDep($x);
+            $depDone{$x} = 1;
         }
     }
 }
 
-if ($isExec) {
-    while (my ($src, $exists) = each %ALL_SRCS) {
-        next if $exists;
-        my $orig = $src;
-        my $src = generateSrc($src);
-        next unless $src;
-        delete $ALL_SRCS{$orig};
-        $ALL_SRCS{$src} = 1;
-        #TODO this necessitates all the include steps above, which in turns means rerunning this block too! there is definitely at least a while loop that needs to go around this whole thing
-        mergeHashes(\%ALL_INCS, includes::find($src));
-        my @objs = srcToObjsBlind($src);
-        die if @objs > 1;
-        # same as above, I think this maybe should be pulled out like INCS and SRCS are here
-        for (@objs) {
-            if (not exists $ALL_OBJS{$_}) {
-                $ALL_OBJS{$_} = 1;
-                doThing($_);
-            }
+generateObj($obj) or die;
+
+
+#print "$target\n";
+#print "\n";
+#print "ALL_INCS\n"; printStuff(\%ALL_INCS);
+#print "ALL_SRCS\n"; printStuff(\%ALL_SRCS);
+#print "ALL_OBJS\n\t" . join("\n\t", keys %ALL_OBJS);
+#print "\n";
+
+exit;
+
+# some wasted effort here because most places this is called already have 'exists' info, but don't pass it. so either those places don't need it or they could pass it here.  not sure it's worth adapting this sub to accept both types because it would probably just be more confusing. not like '-f' is a huge timesink (is it?)
+sub enqueue {
+    for (@_) {
+        if (-f) {
+            enqueueDep($_);
+        } else {
+            enqueueGen($_);
         }
     }
 }
 
-print "\n";
-print "ALL_INCS\n"; printStuff(\%ALL_INCS);
-print "ALL_SRCS\n"; printStuff(\%ALL_SRCS);
-print "ALL_OBJS\n\t" . join("\n\t", keys %ALL_OBJS);
-print "\n";
+sub enqueueDep {
+    printDebug("enqueueDep: @_\n");
+    push @DEP_QUEUE, @_;
+}
 
-sub doThing {
-    my $obj = shift;
-    printDebug("$obj start\n");
+sub enqueueGen {
+    printDebug("enqueueGen: @_\n");
+    push @GEN_QUEUE, @_;
+}
 
-    # convert obj to src
-    my $src;
-    for (@SRC_EXTS) {
-        my $s = $obj =~ s/\.$OBJ_EXT$/\.$_/r;
-        if (-f $s) {
-            $src = $s;
-            last;
+sub processGen {
+    my $x = shift;
+    printDebug("processGen: $x\n");
+    if (isHdr($x)) {
+        if (fileExists($x) or generateInc($x)) {
+            enqueueDep($x);
+        } else {
+            printError("does not exist: $x\n");
         }
-    }
-    unless ($src) { die "Target obj '$obj' has no matching src on disk"; }
-    printDebug("$obj src: $src\n");
-
-    # find incs from src
-    my $incs = includes::find($src);
-    printDebug("$obj " . scalar(keys %$incs) . " includes: " . join(' ', sort(keys %$incs)) . "\n");
-    %ALL_INCS = (%ALL_INCS, %$incs); # might want a more strict merge
-    #while (my ($name, $exists) = each %$incs) {
-    #    $ALL_INCS{$name} = $exists;
-    #}
-
-    # if it's an exec
-    if ($isExec) {
-        # h -> c
-        #my @srcs;
-        #for (keys %$incs) {
-        #    my $base = $_ =~ s/\.$HDR_EXT$//r;
-        #    my $srcExists = 0;
-        #    for (@SRC_EXTS) {
-        #        my $s = "$base.$_";
-        #        # if c exists on disk
-        #        if (-f $s) {
-        #            $srcExists = 1;
-        #            push @srcs, $s;
-        #            $ALL_SRCS{$s} = 1;
-        #            last; # for @SRC_EXTS
-        #        }
-        #    }
-        #    # .SRC because I'm accepting both .c and .cpp as src for .h
-        #    unless ($srcExists) {
-        #        $ALL_SRCS{"$base.SRC"} = 0;
-        #    }
-        #}
-        my @srcs = srcsE(keys %$incs);
-
-        printDebug("$obj <isExec> " . scalar(@srcs) . " srcs: @srcs\n");
-
-        # find incs from c
-        for my $s (@srcs) {
-            mergeHashes(\%ALL_INCS, includes::find($s));
+    } elsif (isSrc($x)) { # this only matches on actual src exts, not on .SRC
+        if (fileExists($x) or generateSrc($x)) {
+            enqueueDep($x);
         }
-        # c -> o, add o to "need to generate"
-        my @objs = srcToObjsBlind(@srcs);
-        #for my $s (@srcs) {
-        #    my $o = $s;
-        #    for my $e (@SRC_EXTS) {
-        #        $o =~ s/\.$e$/\.$OBJ_EXT/;
-        #    }
-        #    push @objs, $o;
-        #}
-
-        printDebug("$obj <isExec> objs: @objs\n");
-
-        for (@objs) {
-            if (not exists $ALL_OBJS{$_}) {
-                $ALL_OBJS{$_} = 1;
-                doThing($_);
+        # not an error if doesn't exist, at least for now.
+        # probably will just wait for linker error.
+        # not sure there's a way to know which headers are
+        # standalone and which have src pairs.
+    } elsif ($x =~ /(.+)\.$SRC_EXT$/) {
+        my $base = $1;
+        # maybe it already exists
+        # don't need to gen if so
+        for my $e (@SRC_EXTS) {
+            my $tmp = "$base.$e";
+            if (-f $tmp) {
+                enqueueDep($tmp);
+                return;
             }
         }
+        # didn't exist, try to gen
+        for my $e (@SRC_EXTS) {
+            my $tmp = "$base.$e";
+            if (generateSrc($tmp)) {
+                enqueueDep($tmp);
+            }
+        }
+    } elsif (isObj($x)) {
+        if (-f $x or generateObj($x)) {
+            enqueueDep($x);
+        } else {
+            printError("does not exist: $x\n");
+        }
+    } else {
+        printError("processGen: don't know what to do with '$x'\n");
     }
 }
 
-sub printStuff {
-    my ($href) = @_;
-    while (my ($name, $exists) = each %$href) {
-        printf "\t%-15s", $name;
-        unless ($exists) { print " [missing]"; }
-        print "\n";
+sub processDep {
+    my $x = shift;
+    printDebug("processDep: $x\n");
+    if (isHdr($x)) {
+        my $incs = includes::find($x);
+        enqueue(keys %$incs);
+        if ($isExec) {
+            my $srcsDirect = srcsE($HDR_EXT, $x);
+            my $srcsInc = srcsE($HDR_EXT, keys %$incs);
+            my %srcs = (%$srcsDirect, %$srcsInc);
+            while (my ($name, $exists) = each %srcs) {
+                if ($exists) { enqueueDep($name); }
+                else { enqueueGen($name); }
+            }
+        }
+    } elsif (isSrc($x)) { # shouldn't be a need to handle .SRC, as the actual file should have already been generated at this point
+        my $incs = includes::find($x);
+        enqueue(keys %$incs);
+        my $obj;
+        for my $e (@SRC_EXTS) {
+            my $tmp = $x;
+            if ($tmp =~ s/\.$e$/\.$OBJ_EXT/) {
+                $obj = $tmp;
+                last;
+            }
+        }
+        enqueue($obj);
+    } elsif (isObj($x)) {
+        my $src = $x =~ s/\.$OBJ_EXT$/\.$SRC_EXT/r;
+        enqueue($src);
+    } else {
+        printError("processDep: don't know what to do with '$x'\n");
     }
+}
+
+sub isHdr {
+    my $x = shift;
+    return ($x =~ /\.$HDR_EXT$/);
+}
+
+sub isSrc {
+    my $x = shift;
+    for my $e (@SRC_EXTS) {
+        if ($x =~ /\.$e$/) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+sub isObj {
+    my $x = shift;
+    return ($x =~ /\.$OBJ_EXT$/);
 }
 
 sub generateInc {
+    if (my $x = _copy_gen(@_)) {
+        $x =~ s/\..+$//;
+        $EXISTS{$x}{inc} = 1;
+        return 1;
+    }
+    return 0;
+}
+
+sub generateSrc {
+    if (my $x = _copy_gen(@_)) {
+        $x =~ s/\..+$//;
+        $EXISTS{$x}{src} = 1;
+        return 1;
+    }
+    return 0;
+}
+
+sub _copy_gen {
     die unless scalar(@_) == 1;
     my $file = shift;
     if (copy("gen/$file", $file)) {
@@ -224,114 +233,80 @@ sub generateInc {
         return 1;
     } else {
         # whether this is an error depends on context, so let caller handle it
-        printDebug("failed to generate $file: $!\n");
+        printDebug("don't know how to generate $file\n");
         return 0;
     }
 }
 
-sub generateSrc {
-    die unless @_ == 1;
-    my $file = shift;
-    unless ($file =~ s/\.$SRC_EXT$//) {
-        die "Expected *.$SRC_EXT but got $file";
-    }
-    for my $ext (@SRC_EXTS) {
-        my $src = "$file.$ext";
-        if (copy("gen/$src", $src)) {
-            printInfo("generated $src\n");
-            return $src;
-        }
-    }
-    printDebug("failed to generate $file (@SRC_EXTS): $!\n");
-    return undef;
-}
-
-#sub generateHeader {
-#    my ($file) = @_;
-#    my $base = $file;
-#    $base =~ s/^.*\///;
-#    $base =~ s/\.$HDR_EXT$//;
-#    my $out;
-#    if (open ($out, ">$file")) {
-#        print $out "#ifndef ${base}_h\n#define ${base}_h\ntypedef struct { int x; } $base;\n#endif\n";
-#        close $out;
-#        print '['.NAME."] generated $file\n");
-#        return 1;
-#    } else {
-#        return 0;
+#sub generateSrc_handlesExts {
+#    die unless @_ == 1;
+#    my $file = shift;
+#    unless ($file =~ s/\.$SRC_EXT$//) {
+#        #die "Expected *.$SRC_EXT but got $file";
+#        confess("Expected *.$SRC_EXT but got $file");
 #    }
+#    for my $ext (@SRC_EXTS) {
+#        my $src = "$file.$ext";
+#        if (copy("gen/$src", $src)) {
+#            printInfo("generated $src\n");
+#            return $src;
+#        }
+#    }
+#    printDebug("failed to generate $file (@SRC_EXTS): $!\n");
+#    return undef;
 #}
 
-# not doing this for now, not sure how I want to handle it
-# Like I will need to rebuild everything, right?  If it doesn't exist, there needs to be a rule to make it.  I guess.  But what if it's just a plain header?  Need to revisit this once I have other stuff more nailed down,
-#     elsif c does not exist on disk
-#         check rules/makefiles/db to see if there's a way to make it
-#         if there is, add it to the "need to generate" list
-#         else die "No such file: $c";
+sub generateObj {
+    my $x = shift;
+    $x =~ s/\.$OBJ_EXT$// or die "Doesn't have obj ext: '$x'";
+    my $src = $GENERATED{$x}{src} or confess();
+    #print "GENERATED\n" . Dumper(\%GENERATED) . "\n";
+    #exit; #XXX
 
-
-sub srcE {
-    my ($inc) = @_;
-    my $base = $inc =~ s/\.$HDR_EXT$//r;
-    my $srcExists = 0;
-    for my $ext (@SRC_EXTS) {
-        my $src = "$base.$ext";
-        if (-f $src) {
-            return $src;
-        }
+    my $cmd = "cl /nologo /c $src";
+    printDebug("$cmd\n");
+    if (system($cmd)) {
+        printError("generateObj: command failed: '$cmd'\n");
+        exit; # return 0 ?
     }
-    return undef;
+    return 1;
 }
 
 sub srcsE {
-    my @srcs;
-    for my $inc (@_) {
-        my $base = $inc;
-        unless ($base =~ s/\.$HDR_EXT$//) {
-            die "Expected *.$HDR_EXT but got $inc";
+    my $inExt = shift;
+    my %srcs;
+    for my $x (@_) {
+        my $base = $x;
+        unless ($base =~ s/\.$inExt$//) {
+            die "Expected *.$inExt but got $x";
         }
         my $srcExists = 0;
+        my $src = undef;
         for my $ext (@SRC_EXTS) {
-            my $src= "$base.$ext";
-            if (-f $src) {
-                $srcExists = 1;
-                push @srcs, $src;
-                $ALL_SRCS{$src} = 1;
+            my $s = "$base.$ext";
+            if (-f $s) {
+                $src = $s;
                 last;
             }
         }
-        # .SRC because I'm accepting both .c and .cpp as src for .h
-        unless ($srcExists) {
-            $ALL_SRCS{"$base.$SRC_EXT"} = 0;
+        if ($src) {
+            $srcs{$src} = 1;
+        } else {
+            $srcs{"$base.$SRC_EXT"} = 0;
         }
+
     }
-    return @srcs;
+    return \%srcs;
 }
 
-sub srcToObjsBlind {
-    my @objs;
-    for my $s (@_) {
-        my $o = $s;
-        for my $e (@SRC_EXTS) {
-            $o =~ s/\.$e$/\.$OBJ_EXT/;
-        }
-        push @objs, $o;
-    }
-    return @objs;
-}
-
-# merge src hash ref into dest hash ref
-sub mergeHashes {
-    my ($dest, $src) = @_;
-    while (my ($k, $v) = each %$src) {
-        # being strict about this so I can tell if something weird is going on
-        # this is how you would do it if you didn't care about value overrides.  this syntax takes the values from the last hash in the list.
-        # %ALL_INCS = (%ALL_INCS, %$incsFromSrc);
-        if (exists $dest->{$k} and $dest->{$k} != $v) {
-            print STDERR "Error: mergeHashes: $k already exists in destination hash: dest = " . $dest->{$k} . ", src = $v\n";
-            exit;
-        }
-        $dest->{$k} = $v;
+sub fileExists {
+    my $x = shift;
+    if (-f $x) {
+        $EXISTS{$x} = 1;
+        return 1;
+    } else {
+        if (exists $EXISTS{$x}) { confess(); } # this should only have existant files in it
+        return 0;
     }
 }
 
@@ -347,4 +322,46 @@ sub printDebug {
     if (DEBUG) { print STDOUT '['.NAME."][debug] @_"; }
 }
 
+# "blind" meaning just directly convert, don't check if it exists
+#sub srcToObjsBlind {
+#    my @objs;
+#    for my $s (@_) {
+#        my $o = $s;
+#        for my $e (@SRC_EXTS) {
+#            $o =~ s/\.$e$/\.$OBJ_EXT/;
+#        }
+#        push @objs, $o;
+#    }
+#    return @objs;
+#}
+
+# merge src into dest, modifying dest
+#sub mergeHashes {
+#    my ($dest, $src) = @_;
+#    while (my ($k, $v) = each %$src) {
+#        # being strict about this so I can tell if something weird is going on
+#        # this is how you would do it if you didn't care about value overrides.  this syntax takes the values from the last hash in the list.
+#        # %ALL_INCS = (%ALL_INCS, %$incsFromSrc);
+#        if (exists $dest->{$k} and $dest->{$k} != $v) {
+#            print STDERR "Error: mergeHashes: $k already exists in destination hash: dest = " . $dest->{$k} . ", src = $v\n";
+#            exit;
+#        }
+#        $dest->{$k} = $v;
+#    }
+#}
+
+#sub printDebugHA {
+#    my $front = shift;
+#    my $desc = shift;
+#    printDebug("$front " . scalar(@_) . " $desc: " . join(' ',sort(@_)) . "\n");
+#}
+
+#sub printStuff {
+#    my ($href) = @_;
+#    while (my ($name, $exists) = each %$href) {
+#        printf "\t%-15s", $name;
+#        unless ($exists) { print " [missing]"; }
+#        print "\n";
+#    }
+#}
 
