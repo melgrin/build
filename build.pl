@@ -1,3 +1,4 @@
+our $VERSION = "13";
 use strict;
 use warnings FATAL => qw(uninitialized);
 use File::Basename qw(basename);
@@ -27,8 +28,6 @@ my @SRC_EXTS = qw/cpp c/;
 my $SRC_EXT = 'SRC'; # generic marker b/c of list of possible exts
 my $EXE_EXT = 'exe'; # TODO handle per platform?
 
-#my %FAILED_GEN;
-
 our ($opt_d);
 getopts('d:') or die $!;
 my @DEBUG_CATEGORIES_ENABLED;
@@ -37,7 +36,7 @@ my $DEBUG_CATEGORY_WIDTH = 13;
 if ($opt_d) {
     my @all = split(/[,\s]+/,$opt_d);
     for (@all) {
-        if (/^-(.+)/) {
+        if (/^-(.+)/) { # such as: vN.pl -d all,-gen
             push @DEBUG_CATEGORIES_DISABLED, $1;
         } else {
             push @DEBUG_CATEGORIES_ENABLED, $_;
@@ -52,8 +51,8 @@ my $DEPTH_DEBUG = 0;
 
 # struct Thing {
 #     Name name;
-#     List<Thing*> dependsOn;
-#     List<Thing*> dependants;
+#     Set<Thing*> dependsOn;
+#     Set<Thing*> dependants;
 #     bool exists; // as a file on disk
 #     enum { NONE, FAIL, SUCCESS } generationResult;
 # };
@@ -61,6 +60,8 @@ my $DEPTH_DEBUG = 0;
 my %ALL;
 
 my %TIMERS; # stats
+
+timerStart('total');
 
 my $target = shift or die "Need target";
 my ($base0, $type0) = basetype($target);
@@ -79,39 +80,41 @@ updateDepsRecursive($firstTarget);
 
 my $iteration = 0;
 while (1) {
-    timerStart('compileDeps');
-    printDebug('phase', "begin compile dep gen phase\n");
 
     $iteration++;
     printDebug('main',"iteration $iteration\n");
-    my @new;
-    # consider that if I do while each stuff might be added to the hash is that ok?
-    for my $name (keys %ALL) {
-        updateDepsRecursive($name); # NovelGen.h 0/0 deps exist, can't find NovelDepGen.h
-        my $h = $ALL{$name};
-        if (not $h->{exists} and allDepsExist($h)) {
-            if (genUE($name)) { push @new, $name; }
-        }
-    }
-
     my $doneCD = 0;
-    if (@new) {
-        printDebug('compile','generated '.@new." new targets: @new\n");
-        for my $i (@new) {
-            updateDepsRecursive($i); # not sure this ever udpates anything
-            for my $j (keys %{$ALL{$i}->{dependants}}) {
-                updateDepsRecursive($j);
+    {
+        timerStart('compileDeps');
+        printDebug('phase', "begin compile dep gen phase\n");
+        my @new;
+        # consider that if I do while each stuff might be added to the hash is that ok?
+        for my $name (keys %ALL) {
+            updateDepsRecursive($name); # NovelGen.h 0/0 deps exist, can't find NovelDepGen.h
+            my $h = $ALL{$name};
+            if (not $h->{exists} and allDepsExist($h)) {
+                if (generateAndUpdateExists($name)) { push @new, $name; }
             }
         }
-        #printDebug('deps',"deps after recursive:\n" . dumpDeps());
-    } else {
-        printDebug('compile',"no new targets generated, exiting loop\n");
-        $doneCD = 1;
-        last;
+    
+        if (@new) {
+            printDebug('compile','generated '.@new." new targets: @new\n");
+            for my $i (@new) {
+                updateDepsRecursive($i); # not sure this ever udpates anything
+                for my $j (keys %{$ALL{$i}->{dependants}}) {
+                    updateDepsRecursive($j);
+                }
+            }
+            #printDebug('deps',"deps after recursive:\n" . dumpDeps());
+        } else {
+            printDebug('compile',"no new targets generated, exiting loop\n");
+            $doneCD = 1;
+        }
+    
+        timerStop('compileDeps');
+        printDebug('phase', "end compile dep gen phase\n");
+        if ($doneCD) { last; }
     }
-
-    timerStop('compileDeps');
-    printDebug('phase', "end compile dep gen phase\n");
     
     #printDebug('deps',"post-compile deps phase:\n" . dumpDeps());
     
@@ -145,7 +148,7 @@ while (1) {
                         #blah_v4($_);
                         my $h = $ALL{$_};
                         if (not $h->{exists} and allDepsExist($h)) {
-                            if (genUE($_)) {
+                            if (generateAndUpdateExists($_)) {
                                 #updateDepsRecursive($_);
                             }
                         }
@@ -164,24 +167,24 @@ while (1) {
             #my @generatedSrcs = grep { blah_v4($_) eq 'succeeded' } @srcs;
             addIfMissing(@srcs);
 
-            my @new;
+            my @newSrcs;
             for (@srcs) {
                 my $h = $ALL{$_};
                 if (not $h->{exists}) {
-                    if (genUE($_)) { push @new, $_; }
+                    if (generateAndUpdateExists($_)) { push @newSrcs, $_; }
                 }
             }
 
-            if (@new) {
-                printDebug('link','generated '.@new." new targets: @new\n");
-                for my $i (@new) {
+            if (@newSrcs) {
+                printDebug('link','generated '.@newSrcs." new targets: @newSrcs\n");
+                for my $i (@newSrcs) {
                     updateDepsRecursive($i); # not sure this ever udpates anything
                     for my $j (keys %{$ALL{$i}->{dependants}}) {
                         updateDepsRecursive($j);
                     }
                 }
                 #printDebug('deps',"deps after recursive:\n" . dumpDeps());
-                my @objs = map { base($_).'.'.$OBJ_EXT } @new;
+                my @objs = map { base($_).'.'.$OBJ_EXT } @newSrcs;
                 addIfMissing(@objs);
                 for my $o (@objs) { updateDepsRecursive($o); }
                 my @new2;
@@ -189,7 +192,7 @@ while (1) {
                     #blah_v4($_);
                     my $h = $ALL{$_};
                     if (not $h->{exists} and allDepsExist($h)) {
-                        if (genUE($_)) { push @new2, $_; }
+                        if (generateAndUpdateExists($_)) { push @new2, $_; }
                     }
                 }
                 if (@new2) {
@@ -218,12 +221,27 @@ while (1) {
 
 }
 
+# this works, but is a bit dumb because it just grabs every src file it has ever known about.  not all of them necessarily contribute to the exe...right?  although, what are you doing, building a bunch of exes?  this script doesn't support that anyway.  so maybe it's fine to assume %ALL is just for the current exe.  and can clear it for the next exe, if there ever is a loop over @ARGV
+if ($type0 eq 'EXE') {
+    printDebug('exe', "processing additional dependencies for $type0 type $target\n");
+    my @objs = grep /\.c$/, keys %ALL;
+    while (my ($k,$v) = each %ALL) {
+        if ($k =~ s/\.c$/\.$OBJ_EXT/ and $v->{exists}) {
+            if (not -e $k) {
+                generate($k) or die "failed to gen $k";
+            }
+            addDeps($target, 'dependsOn', $k);
+            addDeps($k, 'dependants', $target);
+        }
+    }
+}
+
 printDebug('deps',"deps final:\n" . dumpDeps());
 generate($target, grep /\.$OBJ_EXT$/, keys %ALL);
 
 timerStop('total');
 
-printTimes_simple();
+printTimes();
 
 exit;
 
@@ -284,8 +302,7 @@ sub generate {
     if ($r) {
         printDebug('gen',"generated $x\n");
     } else {
-        printDebug('gen',"failed to generate $x\n");
-        #$FAILED_GEN{$x} = 1;
+        printDebug('genfail',"failed to generate $x\n");
     }
     return $r;
 }
@@ -318,7 +335,7 @@ sub generateObj {
     }
     unless ($src) { confess("src for $x does not exist"); }
 
-    my $cmd = "cl /nologo /c /Fo$x $src";
+    my $cmd = "cl /nologo /c /Fo$x $src > /dev/null"; # /showIncludes
     printDebug('cmd',"$cmd\n");
     if (system($cmd)) {
         printError("generateObj: command failed: '$cmd'\n");
@@ -422,7 +439,7 @@ sub arrayDiff {
     return \%d;
 }
 
-sub printTimes_simple {
+sub printTimes {
     my @names = keys %TIMERS;
     my @labels = map { "$_ time" } keys %TIMERS;
     my $max = max(map { length } @labels);
@@ -553,7 +570,7 @@ sub allDepsExist {
     return @n==0;
 }
 
-sub genUE {
+sub generateAndUpdateExists {
     my $name = shift;
     my $r = generate($name);
     if ($r) {
