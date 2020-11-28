@@ -34,3 +34,6 @@ with some nasty stuff up front, v8 works.  the thing that works is '..\v8.pl mai
 
 #### v9
 v9 is as I want it, all target types work as they should. still want to do more cleanup and maybe reevaluate the link dep logic to see if I can merge it into blah.
+
+#### v10
+v10 cleaned up the link dep logic quite a bit. still not as clean as I would like it.
