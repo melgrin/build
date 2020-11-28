@@ -1,4 +1,4 @@
-our $VERSION = "13";
+our $VERSION = "14";
 use strict;
 use warnings FATAL => qw(uninitialized);
 use File::Basename qw(basename);
@@ -55,6 +55,7 @@ my $DEPTH_DEBUG = 0;
 #     Set<Thing*> dependants;
 #     bool exists; // as a file on disk
 #     enum { NONE, FAIL, SUCCESS } generationResult;
+#     function<bool(...)> recipe;
 # };
 # Map<Name, Thing*> ALL;
 my %ALL;
@@ -63,183 +64,190 @@ my %TIMERS; # stats
 
 timerStart('total');
 
-my $target = shift or die "Need target";
-my ($base0, $type0) = basetype($target);
-my $firstTarget;
-if ($type0 eq 'EXE') {
-    $firstTarget = "$base0.$OBJ_EXT";
-    #would be nice to be able to do this off the bat
-    #addDeps($target, 'dependsOn', $firstTarget);
-    #addDeps($firstTarget, 'dependants', $target);
-} else {
-    $firstTarget = $target;
-    addIfMissing($firstTarget);
-}
+for my $target (@ARGV) {
 
-updateDepsRecursive($firstTarget);
+    %ALL = (); # it's per-target, so that we can assume that all .c files in it are deps of the current .exe, if the current target is an .exe
 
-my $iteration = 0;
-while (1) {
-
-    $iteration++;
-    printDebug('main',"iteration $iteration\n");
-    my $doneCD = 0;
-    {
-        timerStart('compileDeps');
-        printDebug('phase', "begin compile dep gen phase\n");
-        my @new;
-        # consider that if I do while each stuff might be added to the hash is that ok?
-        for my $name (keys %ALL) {
-            updateDepsRecursive($name); # NovelGen.h 0/0 deps exist, can't find NovelDepGen.h
-            my $h = $ALL{$name};
-            if (not $h->{exists} and allDepsExist($h)) {
-                if (generateAndUpdateExists($name)) { push @new, $name; }
-            }
-        }
-    
-        if (@new) {
-            printDebug('compile','generated '.@new." new targets: @new\n");
-            for my $i (@new) {
-                updateDepsRecursive($i); # not sure this ever udpates anything
-                for my $j (keys %{$ALL{$i}->{dependants}}) {
-                    updateDepsRecursive($j);
-                }
-            }
-            #printDebug('deps',"deps after recursive:\n" . dumpDeps());
-        } else {
-            printDebug('compile',"no new targets generated, exiting loop\n");
-            $doneCD = 1;
-        }
-    
-        timerStop('compileDeps');
-        printDebug('phase', "end compile dep gen phase\n");
-        if ($doneCD) { last; }
+    my ($base0, $type0) = basetype($target);
+    my $firstTarget;
+    if ($type0 eq 'EXE') {
+        $firstTarget = "$base0.$OBJ_EXT";
+        #would be nice to be able to do this off the bat
+        #addDeps($target, 'dependsOn', $firstTarget);
+        #addDeps($firstTarget, 'dependants', $target);
+    } else {
+        $firstTarget = $target;
+        addIfMissing($firstTarget);
     }
     
-    #printDebug('deps',"post-compile deps phase:\n" . dumpDeps());
+    updateDepsRecursive($firstTarget);
     
-    my $doneE;
-    my $doneLDO;
-
-    if ($type0 eq 'EXE') {
-        $doneE = 0;
-        timerStart('linkDeps');
-        printDebug('phase',"begin link dep gen phase\n");
-
-        # Every src (and yet-to-exist obj) that was created during the dependency generation process for main.o is a dependency for main.exe.
-        #my $doneE = 0;
+    my $iteration = 0;
+    while (1) {
+    
+        $iteration++;
+        printDebug('main',"iteration $iteration\n");
+        my $doneCD = 0;
         {
-            my @srcs = map { base($_).'.c' } grep {/\.$HDR_EXT$/} keys %ALL; # @src_ext_cheat
-
-            @srcs = grep {-f} @srcs;
-
-            #for (@srcs) { updateDepsRecursive($_); }
-
-            printDebug('link',"existing srcs: @srcs\n");
-            if (@srcs) {
-                my @objs = map { base($_).'.'.$OBJ_EXT } @srcs;
-                addIfMissing(@objs);
-                for my $o (@objs) { updateDepsRecursive($o); }
-                if (all { -f } @objs) {
-                    printDebug('link',"all obj for src already exist: @objs\n");
-                    $doneE = 1;
-                } else {
-                    for (@objs) {
-                        #blah_v4($_);
-                        my $h = $ALL{$_};
-                        if (not $h->{exists} and allDepsExist($h)) {
-                            if (generateAndUpdateExists($_)) {
-                                #updateDepsRecursive($_);
-                            }
-                        }
-                    }
-                }
-            } else {
-                $doneE = 1;
-            }
-        }
-
-        # For all dependencies that are hdrs with no matching src, try to generate the src.  if successful, the obj is needed for linking main.exe
-        #my $doneLDO = 0;
-        {
-            my @srcs = map { base($_).'.c' } grep {/\.$HDR_EXT$/} keys %ALL; # @src_ext_cheat
-   
-            #my @generatedSrcs = grep { blah_v4($_) eq 'succeeded' } @srcs;
-            addIfMissing(@srcs);
-
-            my @newSrcs;
-            for (@srcs) {
-                my $h = $ALL{$_};
-                if (not $h->{exists}) {
-                    if (generateAndUpdateExists($_)) { push @newSrcs, $_; }
+            timerStart('compileDeps');
+            printDebug('phase', "begin compile dep gen phase\n");
+            my @new;
+            # consider that if I do while each stuff might be added to the hash is that ok?
+            for my $name (keys %ALL) {
+                updateDepsRecursive($name); # NovelGen.h 0/0 deps exist, can't find NovelDepGen.h
+                my $h = $ALL{$name};
+                if (not $h->{exists} and allDepsExist($h)) {
+                    if (generateAndUpdateExists($name)) { push @new, $name; }
                 }
             }
-
-            if (@newSrcs) {
-                printDebug('link','generated '.@newSrcs." new targets: @newSrcs\n");
-                for my $i (@newSrcs) {
+        
+            if (@new) {
+                printDebug('compile','generated '.@new." new targets: @new\n");
+                for my $i (@new) {
                     updateDepsRecursive($i); # not sure this ever udpates anything
                     for my $j (keys %{$ALL{$i}->{dependants}}) {
                         updateDepsRecursive($j);
                     }
                 }
                 #printDebug('deps',"deps after recursive:\n" . dumpDeps());
-                my @objs = map { base($_).'.'.$OBJ_EXT } @newSrcs;
-                addIfMissing(@objs);
-                for my $o (@objs) { updateDepsRecursive($o); }
-                my @new2;
-                for (@objs) {
-                    #blah_v4($_);
+            } else {
+                printDebug('compile',"no new targets generated, exiting loop\n");
+                $doneCD = 1;
+            }
+        
+            timerStop('compileDeps');
+            printDebug('phase', "end compile dep gen phase\n");
+            if ($doneCD) { last; }
+        }
+        
+        #printDebug('deps',"post-compile deps phase:\n" . dumpDeps());
+        
+        my $doneE;
+        my $doneLDO;
+    
+        if ($type0 eq 'EXE') {
+            $doneE = 0;
+            timerStart('linkDeps');
+            printDebug('phase',"begin link dep gen phase\n");
+    
+            # Every src (and yet-to-exist obj) that was created during the dependency generation process for main.o is a dependency for main.exe.
+            #my $doneE = 0;
+            {
+                my @srcs = map { base($_).'.c' } grep {/\.$HDR_EXT$/} keys %ALL; # @src_ext_cheat
+    
+                @srcs = grep {-f} @srcs;
+    
+                #for (@srcs) { updateDepsRecursive($_); }
+    
+                printDebug('link',"existing srcs: @srcs\n");
+                if (@srcs) {
+                    my @objs = map { base($_).'.'.$OBJ_EXT } @srcs;
+                    addIfMissing(@objs);
+                    for my $o (@objs) { updateDepsRecursive($o); }
+                    if (all { -f } @objs) {
+                        printDebug('link',"all obj for src already exist: @objs\n");
+                        $doneE = 1;
+                    } else {
+                        for (@objs) {
+                            #blah_v4($_);
+                            my $h = $ALL{$_};
+                            if (not $h->{exists} and allDepsExist($h)) {
+                                if (generateAndUpdateExists($_)) {
+                                    #updateDepsRecursive($_);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    $doneE = 1;
+                }
+            }
+    
+            # For all dependencies that are hdrs with no matching src, try to generate the src.  if successful, the obj is needed for linking main.exe
+            #my $doneLDO = 0;
+            {
+                my @srcs = map { base($_).'.c' } grep {/\.$HDR_EXT$/} keys %ALL; # @src_ext_cheat
+       
+                #my @generatedSrcs = grep { blah_v4($_) eq 'succeeded' } @srcs;
+                addIfMissing(@srcs);
+    
+                my @newSrcs;
+                for (@srcs) {
                     my $h = $ALL{$_};
-                    if (not $h->{exists} and allDepsExist($h)) {
-                        if (generateAndUpdateExists($_)) { push @new2, $_; }
+                    if (not $h->{exists}) {
+                        if (generateAndUpdateExists($_)) { push @newSrcs, $_; }
                     }
                 }
-                if (@new2) {
-                    # new .o, do I care?  that won't cause a change in deps.
+    
+                if (@newSrcs) {
+                    printDebug('link','generated '.@newSrcs." new targets: @newSrcs\n");
+                    for my $i (@newSrcs) {
+                        updateDepsRecursive($i); # not sure this ever udpates anything
+                        for my $j (keys %{$ALL{$i}->{dependants}}) {
+                            updateDepsRecursive($j);
+                        }
+                    }
+                    #printDebug('deps',"deps after recursive:\n" . dumpDeps());
+                    my @objs = map { base($_).'.'.$OBJ_EXT } @newSrcs;
+                    addIfMissing(@objs);
+                    for my $o (@objs) { updateDepsRecursive($o); }
+                    my @new2;
+                    for (@objs) {
+                        #blah_v4($_);
+                        my $h = $ALL{$_};
+                        if (not $h->{exists} and allDepsExist($h)) {
+                            if (generateAndUpdateExists($_)) { push @new2, $_; }
+                        }
+                    }
+                    if (@new2) {
+                        # new .o, do I care?  that won't cause a change in deps.
+                    } else {
+                        $doneLDO = 1;
+                    }
                 } else {
+                    printDebug('link',"no new targets generated\n");
                     $doneLDO = 1;
                 }
-            } else {
-                printDebug('link',"no new targets generated\n");
-                $doneLDO = 1;
-            }
-
-        }
-
-        timerStop('linkDeps');
-        printDebug('phase',"end link dep gen phase\n");
     
-    } else {
-        $doneE = 1;
-        $doneLDO = 1;
-    }
-
-    if ($doneCD and $doneE and $doneLDO) {
-        last;
-    }
-
-}
-
-# this works, but is a bit dumb because it just grabs every src file it has ever known about.  not all of them necessarily contribute to the exe...right?  although, what are you doing, building a bunch of exes?  this script doesn't support that anyway.  so maybe it's fine to assume %ALL is just for the current exe.  and can clear it for the next exe, if there ever is a loop over @ARGV
-if ($type0 eq 'EXE') {
-    printDebug('exe', "processing additional dependencies for $type0 type $target\n");
-    my @objs = grep /\.c$/, keys %ALL;
-    while (my ($k,$v) = each %ALL) {
-        if ($k =~ s/\.c$/\.$OBJ_EXT/ and $v->{exists}) {
-            if (not -e $k) {
-                generate($k) or die "failed to gen $k";
             }
-            addDeps($target, 'dependsOn', $k);
-            addDeps($k, 'dependants', $target);
+    
+            timerStop('linkDeps');
+            printDebug('phase',"end link dep gen phase\n");
+        
+        } else {
+            $doneE = 1;
+            $doneLDO = 1;
         }
+    
+        if ($doneCD and $doneE and $doneLDO) {
+            last;
+        }
+    
     }
-}
+    
+    # XXX 2020-Oct-20 01:19
+    # XXX very tired and unfamiliar with this. just trying something to not forget the .o deps for exe linking upon reinvoke of "vX.pl main.exe" (I forget why it forgets but I guess it's because this doesn't have to remake them because they already exist.  But shouldn't it visit them and upon discovering they already exist, add them to the exe dep anyway?  need to review link dep logic above.)
+    # XXX follow-up: this works. but obviously it's a bit dumb because it just grabs every src file it has ever known about.  not all of them necessarily contribute to the exe...right?  although, what are you doing, building a bunch of exes?  this script doesn't support that anyway.  so maybe it's find to assume %ALL is just for the current exe.  and can clear it for the next exe, if there ever is a loop over @ARGV
+    if ($type0 eq 'EXE') {
+        printDebug('exe', "processing additional dependencies for $type0 type $target\n");
+        my @objs = grep /\.c$/, keys %ALL;
+        while (my ($k,$v) = each %ALL) {
+            if ($k =~ s/\.c$/\.$OBJ_EXT/ and $v->{exists}) {
+                if (not -e $k) {
+                    generate($k) or die "failed to gen $k"; # might want to do something other than dying here, but I haven't thought about it.  death is the only thing on my mind.
+                }
+                addDeps($target, 'dependsOn', $k);
+                addDeps($k, 'dependants', $target);
+            }
+        }
+        generate($target, grep /\.$OBJ_EXT$/, keys %ALL);
+    }
+    
+    printDebug('deps',"deps final:\n" . dumpDeps());
+    
+    timerStop('total');
 
-printDebug('deps',"deps final:\n" . dumpDeps());
-generate($target, grep /\.$OBJ_EXT$/, keys %ALL);
-
-timerStop('total');
+} # end for @ARGV
 
 printTimes();
 
@@ -291,19 +299,32 @@ sub updateDepsRecursive {
 
 sub generate {
     my $x = shift;
-    my (undef, $type) = basetype($x);
     my $r;
     my $time0 = [Time::HiRes::gettimeofday()];
-    if    ($type eq 'HDR') { $r = generateInc($x, @_); }
-    elsif ($type eq 'SRC') { $r = generateSrc($x, @_); }
-    elsif ($type eq 'OBJ') { $r = generateObj($x, @_); }
-    elsif ($type eq 'EXE') { $r = generateExe($x, @_); }
-    else { die "Don't know how to generate '$x'"; }
+    my $genFn = $ALL{$x}->{recipe};
+    if ($genFn) {
+        $r = $genFn->($x, @_);
+    } else {
+        die "Don't know how to generate '$x'";
+    }
     if ($r) {
         printDebug('gen',"generated $x\n");
     } else {
         printDebug('genfail',"failed to generate $x\n");
     }
+    return $r;
+}
+
+sub determineGenFn {
+    my $x = shift;
+    my $type = type($x);
+    my $r = undef;
+    if    ($type eq 'HDR') { $r = \&generateInc; }
+    elsif ($type eq 'SRC') { $r = \&generateSrc; }
+    elsif ($type eq 'OBJ') { $r = \&generateObj; }
+    elsif ($type eq 'EXE') { $r = \&generateExe; }
+    #else { die "Don't know how to generate '$x'"; }
+    else { printDebug('recipe', "Don't know how to generate '$x'\n"); }
     return $r;
 }
 
@@ -318,7 +339,13 @@ sub generateSrc {
 sub _copy_gen {
     die unless scalar(@_) == 1;
     my $file = shift;
-    return copy("gen/$file", $file);
+    my $from = "gen/$file";
+    my $to = $file;
+    my $r = copy($from, $to);
+    if ($r) {
+        printDebug('cmd', "File::Copy::copy($from, $to)\n");
+    }
+    return $r;
 }
 
 sub generateObj {
@@ -496,7 +523,8 @@ sub addIfMissing {
                 exists => -f $_ ? 1 : 0,
                 dependsOn => {},
                 dependants => {},
-                generationResult => ''
+                generationResult => '',
+                recipe => determineGenFn($_)
             };
             #printDebug('addIfMissing',"creating new entry for $_: " . Dumper($ALL{$_}) . "\n");
         }
@@ -515,7 +543,6 @@ sub timerStop {
     for (@_) {
         my $elapsed = Time::HiRes::tv_interval($TIMERS{$_}->{start}, $time);
         $TIMERS{$_}->{end} = $time;
-        #$TIMERS{$_}->{elapsed} = $elapsed;
         $TIMERS{$_}->{elapsed} += $elapsed;
     }
     return timerGet(@_);

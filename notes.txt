@@ -61,3 +61,6 @@ Moving to v12 to try to replace blah_v4.  I think that it is doing too much with
 
 #### v13
 2020-Oct-20 - v13 - Fixed the remake link error.  Not sure the solution should be outside that loop like it is.  It also assumes that everything in ALL is for the current exe.  But the program can only create one target right now anyway (shift @ARGV, not for @ARGV), so other stuff would have to get updated too.
+
+#### v14
+2020-Oct-24 - v14 - Works for multiple user-specified targets.  ..\v14.pl main.exe other_main.exe.  These two have partially different dependencies.  Built separately, only the deps for that target are created.  -d cmd is useful to see this.
