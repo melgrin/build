@@ -64,3 +64,6 @@ Moving to v12 to try to replace blah_v4.  I think that it is doing too much with
 
 #### v14
 2020-Oct-24 - v14 - Works for multiple user-specified targets.  ..\v14.pl main.exe other_main.exe.  These two have partially different dependencies.  Built separately, only the deps for that target are created.  -d cmd is useful to see this.
+
+####
+2020-Oct-30 - I was somehow getting a hash into the keys of %ALL, so I got mad and ported the script to C++
