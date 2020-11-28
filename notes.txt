@@ -53,3 +53,8 @@ struct Thing {
     List<Thing*> dependantOn;
 };
 Map<Name, Thing*> ALL;
+
+#### v12
+Moving to v12 to try to replace blah_v4.  I think that it is doing too much with too many conditionals.  the actual issue right now is "make clean && ..\v11.pl main.exe && ..\v11.pl main.exe".  the second v11.pl call fails because the script doesn't know about any of the objs except main.o (which I directly told it).  this is because blah handles dependency discovery and generation together and since those .c and .o files already exist from the first call to v11.pl, they don't need to be generated, so the script doesn't determine their dependencies, they don't get into the map, etc.  I'm not entirely sure where the breaking point is.  I want to try a more phased approach, kind of like the link stuff.
+
+2020-Sep-20 - v12 - the restructuring was successful, I think.  as before, it works after a make clean.  but repeated 'main.exe' fails because .o aren't in ALL.

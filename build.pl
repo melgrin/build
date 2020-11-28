@@ -1,4 +1,3 @@
-our $VERSION = "11";
 use strict;
 use warnings FATAL => qw(uninitialized);
 use File::Basename qw(basename);
@@ -28,81 +27,129 @@ my @SRC_EXTS = qw/cpp c/;
 my $SRC_EXT = 'SRC'; # generic marker b/c of list of possible exts
 my $EXE_EXT = 'exe'; # TODO handle per platform?
 
-my %FAILED_GEN;
+#my %FAILED_GEN;
 
 our ($opt_d);
 getopts('d:') or die $!;
-my @DEBUG_CATEGORIES;
+my @DEBUG_CATEGORIES_ENABLED;
+my @DEBUG_CATEGORIES_DISABLED;
 my $DEBUG_CATEGORY_WIDTH = 13;
 if ($opt_d) {
-    @DEBUG_CATEGORIES = split(/[,\s]+/,$opt_d);
+    my @all = split(/[,\s]+/,$opt_d);
+    for (@all) {
+        if (/^-(.+)/) {
+            push @DEBUG_CATEGORIES_DISABLED, $1;
+        } else {
+            push @DEBUG_CATEGORIES_ENABLED, $_;
+        }
+    }
     if ($opt_d !~ /all/) {
-        $DEBUG_CATEGORY_WIDTH = max(map { length } @DEBUG_CATEGORIES);
+        $DEBUG_CATEGORY_WIDTH = max(map { length } @DEBUG_CATEGORIES_ENABLED);
     }
 }
 
 my $DEPTH_DEBUG = 0;
-my %GEN_TIMES;
 
 # struct Thing {
 #     Name name;
-#     List<Thing*> dependants;
 #     List<Thing*> dependsOn;
+#     List<Thing*> dependants;
+#     bool exists; // as a file on disk
+#     enum { NONE, FAIL, SUCCESS } generationResult;
 # };
 # Map<Name, Thing*> ALL;
 my %ALL;
 
-my %TIMERS;
+my %TIMERS; # stats
 
 my $target = shift or die "Need target";
-
 my ($base0, $type0) = basetype($target);
-
-printDebugC('phase', "begin compile dep gen phase\n");
-timerStart('total','compileDeps');
 my $firstTarget;
 if ($type0 eq 'EXE') {
     $firstTarget = "$base0.$OBJ_EXT";
-    #    addDeps($target, 'dependsOn', $firstTarget);
-    #    addDeps($firstTarget, 'dependants', $target);
+    #would be nice to be able to do this off the bat
+    #addDeps($target, 'dependsOn', $firstTarget);
+    #addDeps($firstTarget, 'dependants', $target);
 } else {
     $firstTarget = $target;
+    addIfMissing($firstTarget);
 }
-blah_v4($firstTarget);
-timerStop('compileDeps');
-printDebugC('phase', "end compile dep gen phase\n");
-#printDebugC('total', "compile_deps:\n".Dumper($compile_deps)."\n");
 
-#printGlobalDeps('deps');
-#printDebugC('deps',"ALL{$firstTarget}:\n".Dumper($ALL{$firstTarget})."\n");
-printDebugC('deps',"post-compile deps phase:\n" . dumpDeps());
+updateDepsRecursive($firstTarget);
 
-# FIXME because I removed link_deps thing, I am missing knowledge of what's needed for exe.  None of the objs besides main.o are being built anymore.
-if ($type0 eq 'EXE') {
-    timerStart('linkDeps');
-    printDebugC('phase',"begin link dep gen phase\n");
-    while (1) {
+my $iteration = 0;
+while (1) {
+    timerStart('compileDeps');
+    printDebug('phase', "begin compile dep gen phase\n");
+
+    $iteration++;
+    printDebug('main',"iteration $iteration\n");
+    my @new;
+    # consider that if I do while each stuff might be added to the hash is that ok?
+    for my $name (keys %ALL) {
+        updateDepsRecursive($name); # NovelGen.h 0/0 deps exist, can't find NovelDepGen.h
+        my $h = $ALL{$name};
+        if (not $h->{exists} and allDepsExist($h)) {
+            if (genUE($name)) { push @new, $name; }
+        }
+    }
+
+    my $doneCD = 0;
+    if (@new) {
+        printDebug('compile','generated '.@new." new targets: @new\n");
+        for my $i (@new) {
+            updateDepsRecursive($i); # not sure this ever udpates anything
+            for my $j (keys %{$ALL{$i}->{dependants}}) {
+                updateDepsRecursive($j);
+            }
+        }
+        #printDebug('deps',"deps after recursive:\n" . dumpDeps());
+    } else {
+        printDebug('compile',"no new targets generated, exiting loop\n");
+        $doneCD = 1;
+        last;
+    }
+
+    timerStop('compileDeps');
+    printDebug('phase', "end compile dep gen phase\n");
+    
+    #printDebug('deps',"post-compile deps phase:\n" . dumpDeps());
+    
+    my $doneE;
+    my $doneLDO;
+
+    if ($type0 eq 'EXE') {
+        $doneE = 0;
+        timerStart('linkDeps');
+        printDebug('phase',"begin link dep gen phase\n");
 
         # Every src (and yet-to-exist obj) that was created during the dependency generation process for main.o is a dependency for main.exe.
-        my $doneE = 0;
+        #my $doneE = 0;
         {
-            #my @srcs = uniq(
-            #    depsHdrToSrc($compile_deps),
-            #    depsHdrToSrc($link_deps));
-            #my @srcs = depsHdrToSrc_global(\%DEPS);
             my @srcs = map { base($_).'.c' } grep {/\.$HDR_EXT$/} keys %ALL; # @src_ext_cheat
 
-            #@srcs = grep {-f} @srcs;
-            @srcs = grep { blah_v4($_) eq 'already_exists' } @srcs;
+            @srcs = grep {-f} @srcs;
 
-            printDebugC('link',"existing srcs: @srcs\n");
+            #for (@srcs) { updateDepsRecursive($_); }
+
+            printDebug('link',"existing srcs: @srcs\n");
             if (@srcs) {
                 my @objs = map { base($_).'.'.$OBJ_EXT } @srcs;
+                addIfMissing(@objs);
+                for my $o (@objs) { updateDepsRecursive($o); }
                 if (all { -f } @objs) {
-                    printDebugC('link',"all obj for src already exist: @objs\n");
+                    printDebug('link',"all obj for src already exist: @objs\n");
                     $doneE = 1;
                 } else {
-                    for (@objs) { blah_v4($_); }
+                    for (@objs) {
+                        #blah_v4($_);
+                        my $h = $ALL{$_};
+                        if (not $h->{exists} and allDepsExist($h)) {
+                            if (genUE($_)) {
+                                #updateDepsRecursive($_);
+                            }
+                        }
+                    }
                 }
             } else {
                 $doneE = 1;
@@ -110,30 +157,69 @@ if ($type0 eq 'EXE') {
         }
 
         # For all dependencies that are hdrs with no matching src, try to generate the src.  if successful, the obj is needed for linking main.exe
-        my $doneLDO = 0;
+        #my $doneLDO = 0;
         {
             my @srcs = map { base($_).'.c' } grep {/\.$HDR_EXT$/} keys %ALL; # @src_ext_cheat
+   
+            #my @generatedSrcs = grep { blah_v4($_) eq 'succeeded' } @srcs;
+            addIfMissing(@srcs);
 
-            my @generatedSrcs = grep { blah_v4($_) eq 'succeeded' } @srcs;
-            if (@generatedSrcs) {
-                my @objs = map { base($_).'.'.$OBJ_EXT } @generatedSrcs;
-                for (@objs) { blah_v4($_); }
+            my @new;
+            for (@srcs) {
+                my $h = $ALL{$_};
+                if (not $h->{exists}) {
+                    if (genUE($_)) { push @new, $_; }
+                }
+            }
+
+            if (@new) {
+                printDebug('link','generated '.@new." new targets: @new\n");
+                for my $i (@new) {
+                    updateDepsRecursive($i); # not sure this ever udpates anything
+                    for my $j (keys %{$ALL{$i}->{dependants}}) {
+                        updateDepsRecursive($j);
+                    }
+                }
+                #printDebug('deps',"deps after recursive:\n" . dumpDeps());
+                my @objs = map { base($_).'.'.$OBJ_EXT } @new;
+                addIfMissing(@objs);
+                for my $o (@objs) { updateDepsRecursive($o); }
+                my @new2;
+                for (@objs) {
+                    #blah_v4($_);
+                    my $h = $ALL{$_};
+                    if (not $h->{exists} and allDepsExist($h)) {
+                        if (genUE($_)) { push @new2, $_; }
+                    }
+                }
+                if (@new2) {
+                    # new .o, do I care?  that won't cause a change in deps.
+                } else {
+                    $doneLDO = 1;
+                }
             } else {
+                printDebug('link',"no new targets generated\n");
                 $doneLDO = 1;
             }
-        }
-        if ($doneE and $doneLDO) { last; }
-    }
-    timerStop('linkDeps');
-    printDebugC('phase',"end link dep gen phase\n");
 
-    #printGlobalDeps('deps');
-    #printDebugC('deps',"ALL{$firstTarget}\n".Dumper($ALL{$firstTarget})."\n");
-    printDebugC('deps',"post-link deps phase:\n" . dumpDeps());
-    #printDebugC('total', "link_deps:\n".Dumper($link_deps)."\n");
-    generate($target, grep /\.$OBJ_EXT$/, keys %ALL);
+        }
+
+        timerStop('linkDeps');
+        printDebug('phase',"end link dep gen phase\n");
+    
+    } else {
+        $doneE = 1;
+        $doneLDO = 1;
+    }
+
+    if ($doneCD and $doneE and $doneLDO) {
+        last;
+    }
 
 }
+
+printDebug('deps',"deps final:\n" . dumpDeps());
+generate($target, grep /\.$OBJ_EXT$/, keys %ALL);
 
 timerStop('total');
 
@@ -142,52 +228,6 @@ printTimes_simple();
 exit;
 
 ####
-
-sub blah_v4 {
-    my $x = shift;
-    printDebugC('blah',"blah_v4($x)\n");
-    $DEPTH_DEBUG++;
-    my @Deps = determineDeps($x);
-    addDeps($x, 'dependsOn', @Deps);
-    for (@Deps) { addDeps($_, 'dependants', $x); }
-
-    while (1) {
-        my $all = 1;
-        my @deps = keys %{$ALL{$x}->{dependsOn}};
-        if (@deps) {
-            my @done;
-            my @notDone;
-            for (@deps) {
-                if (not -f $_ and not $FAILED_GEN{$_}) {
-                    $all = 0;
-                    push @notDone, $_; #TODO move out - for (@notDone) { blah($_); }
-                    blah_v4($_);
-                } else {
-                    push @done, $_;
-                }
-            }
-            printDebugC('blah',@done.'/'.@deps." deps done for $x: done = (@done), notDone = (@notDone)\n");
-        } else {
-            printDebugC('blah',"no deps for $x\n");
-        }
-        if ($all) { last; }
-    }
-
-    my $genState = tryGenerate($x);
-
-    if ($genState eq 'succeeded' or $genState eq 'already_exists') {
-        # Reprocess the dependencies for everything that depends on the target that was just generated.  (Because since it was just generated, there might be previously-unseen #includes in it, for example.)
-        for my $f (keys %{$ALL{$x}->{dependants}}) {
-            my @fDeps = determineDeps($f);
-            # don't think I need this - GenIncGen.h doesn't have Gen.h as a dependant, despite revealing Gen.h to main.o (which is covered in the line after this)
-            #addDeps($x, 'dependants', @fDeps);
-            addDeps($f, 'dependsOn', @fDeps);
-        }
-    }
-
-    $DEPTH_DEBUG--;
-    return $genState;
-}
 
 sub determineDeps {
     my $target = shift;
@@ -211,53 +251,24 @@ sub determineDeps {
     } else {
         die "script not done for $type files yet (target = $target)";
     }
-    printDebugC('detDeps',"$target: @deps\n");
+    if (@deps) {
+        printDebug('detDeps',"$target: @deps\n");
+    }
     return @deps;
 }
 
-# Never used this, moving to v12 to try it out
-# Basically should be a replacement for part of blah_v4 because that function is doing both deps and gen, which I think is limiting dependency discovery on reruns of the script before a clean.
-sub determineDepsRecursive {
+sub updateDepsRecursive {
     $DEPTH_DEBUG++;
     my $x = shift;
+
     my @deps = determineDeps($x);
-    my @known = keys %{$ALL{$x}->{dependsOn}};
-    my $diff = arrayDiff(\@known, \@deps);
-    #    if (%$diff) {
-    #        my @new;
-    #        while (my ($val, $which) = each %$diff) {
-    #            if ($which eq 'b') {
-    #                push @new, $val;
-    #            } else {
-    #                confess("which = ".($which?$which:'undef') ." for val = $val after array diff between known (@known) and deps (@deps)");
-    #            }
-    #        }
-    #        printDebugC('detDepsR', "$x: new = (@new), all = (@deps)\n");
-    #        if (@new) {
-    #            addDeps($x, 'dependsOn', @Deps);
-    #            for (@new) { addDeps($_, 'dependants', $x); }
-    #        }
-    #    }
+
     addDeps($x, 'dependsOn', @deps);
     for (@deps) { addDeps($_, 'dependants', $x); }
-    for (@deps) { determineDepsRecursive($_); }
-    $DEPTH_DEBUG--;
-}
 
-sub tryGenerate {
-    my $x = shift;
-    my $genState;
-    if (-f $x) {
-        $genState = 'already_exists';
-    } elsif ($FAILED_GEN{$x}) {
-        $genState = 'failed_previously';
-    } elsif (generate($x)) {
-        $genState = 'succeeded';
-    } else {
-        $genState = 'failed';
-    }
-    printDebugC('tryGen',"$x: $genState\n");
-    return $genState;
+    for (@deps) { updateDepsRecursive($_); }
+
+    $DEPTH_DEBUG--;
 }
 
 sub generate {
@@ -271,11 +282,10 @@ sub generate {
     elsif ($type eq 'EXE') { $r = generateExe($x, @_); }
     else { die "Don't know how to generate '$x'"; }
     if ($r) {
-        printDebugC('gen',"generated $x\n");
-        $GEN_TIMES{$x} = Time::HiRes::tv_interval($time0, [Time::HiRes::gettimeofday()]);
+        printDebug('gen',"generated $x\n");
     } else {
-        printDebugC('gen',"failed to generate $x\n");
-        $FAILED_GEN{$x} = 1;
+        printDebug('gen',"failed to generate $x\n");
+        #$FAILED_GEN{$x} = 1;
     }
     return $r;
 }
@@ -308,8 +318,8 @@ sub generateObj {
     }
     unless ($src) { confess("src for $x does not exist"); }
 
-    my $cmd = "cl /nologo /c /Fo$x $src > NUL";
-    printDebugC('cmd',"$cmd\n");
+    my $cmd = "cl /nologo /c /Fo$x $src";
+    printDebug('cmd',"$cmd\n");
     if (system($cmd)) {
         printError("generateObj: command failed: '$cmd'\n");
         confess();
@@ -321,7 +331,7 @@ sub generateObj {
 sub generateExe {
     my $x = shift;
     my $cmd = "link /nologo /OUT:$x @_";
-    printDebugC('cmd',"$cmd\n");
+    printDebug('cmd',"$cmd\n");
     if (system($cmd)) {
         printError("generateExe: command failed: '$cmd'\n");
         confess();
@@ -375,16 +385,9 @@ sub printInfo {
 
 sub printDebug {
     if (DEBUG) {
-        my $pad = '';
-        for (1..$DEPTH_DEBUG) { $pad .= '- '; }
-        print STDOUT '['.NAME."][debug] $pad@_";
-    }
-}
-
-sub printDebugC {
-    if (DEBUG) {
         my $cat = shift;
-        if (grep { /^($cat|all)$/i } @DEBUG_CATEGORIES) {
+        if (grep { /^($cat|all)$/i } @DEBUG_CATEGORIES_ENABLED
+        and not grep { /^$cat$/ } @DEBUG_CATEGORIES_DISABLED) {
             my $pad = '';
             for (1..$DEPTH_DEBUG) { $pad .= '- '; }
             printf STDOUT '[%s][debug][%-*s] %s%s',
@@ -454,8 +457,8 @@ sub assertUniq {
 sub addDeps {
     my $x = shift;
     my $key = shift;
-    createIfMissing($x);
-    createIfMissing(@_);
+    addIfMissing($x);
+    addIfMissing(@_);
     my @new;
     for (@_) {
         unless (exists $ALL{$x}->{$key}->{$_}) {
@@ -463,17 +466,22 @@ sub addDeps {
             push @new, $_;
         }
     }
-    printDebugC('new',"$x $key += @new\n");
+    if (@new) {
+        printDebug('new',"$x $key += @new\n");
+    }
 }
 
-sub createIfMissing {
+sub addIfMissing {
     for (@_) {
         if (not exists $ALL{$_}) {
             $ALL{$_} = {
                 name => $_,
+                exists => -f $_ ? 1 : 0,
                 dependsOn => {},
-                dependants => {}
+                dependants => {},
+                generationResult => ''
             };
+            #printDebug('addIfMissing',"creating new entry for $_: " . Dumper($ALL{$_}) . "\n");
         }
     }
 }
@@ -490,7 +498,8 @@ sub timerStop {
     for (@_) {
         my $elapsed = Time::HiRes::tv_interval($TIMERS{$_}->{start}, $time);
         $TIMERS{$_}->{end} = $time;
-        $TIMERS{$_}->{elapsed} = $elapsed;
+        #$TIMERS{$_}->{elapsed} = $elapsed;
+        $TIMERS{$_}->{elapsed} += $elapsed;
     }
     return timerGet(@_);
 }
@@ -501,95 +510,60 @@ sub timerGet {
 }
 
 sub dumpDeps {
+    my @names = @_ ? @_ : keys %ALL;
     my $s = '';
-    for my $i (keys %ALL) {
+    for my $i (@names) {
+        my $e = $ALL{$i}->{exists};
+        if (not defined $e) { confess($i); }
         $s .= $i
+            . "\n\texists: "
+            . $ALL{$i}->{exists}
             . "\n\tdependsOn: "
-            . join(' ',keys $ALL{$i}->{dependsOn})
+            . join(' ',keys %{$ALL{$i}->{dependsOn}})
             . "\n\tdependants: "
-            . join(' ',keys $ALL{$i}->{dependants})
+            . join(' ',keys %{$ALL{$i}->{dependants}})
+            . "\n\tgenerationResult: "
+            . $ALL{$i}->{generationResult}
             . "\n";
     }
     return $s;
 }
 
-#sub printTimes {
-#    my ($totalElapsed, $compileDepsElapsed, $linkDepsElapsed, $cdeps, $ldeps) = @_;
-#
-#    # originals, to check my work
-#    my $cdeO = $compileDepsElapsed;
-#    my $ldeO = $linkDepsElapsed;
-#
-#    my %genTotals;
-#    while (my ($f,$t) = each %GEN_TIMES) {
-#        my $type = type($f);
-#        if (exists $genTotals{$type}) {
-#            $genTotals{$type} += $t;
-#        } else {
-#            $genTotals{$type} = $t;
-#        }
-#    }
-#
-#    for my $f (keys %$cdeps) {
-#        if (exists $GEN_TIMES{$f}) {
-#            #print "compileDE -= $GEN_TIMES{$f} ($f)\n";
-#            $compileDepsElapsed -= $GEN_TIMES{$f};
-#        }
-#    }
-#
-#    for my $f (keys %$ldeps) {
-#        if (exists $GEN_TIMES{$f}) {
-#            #print "linkDE -= $GEN_TIMES{$f} ($f)\n";
-#            $linkDepsElapsed -= $GEN_TIMES{$f};
-#        }
-#    }
-#
-#    my $genTotal = 0;
-#    while (my ($type, $time) = each %genTotals) {
-#        #printf "$type generation time: %.5f seconds\n", $time;
-#        $genTotal += $time;
-#    }
-#
-#    # FIXME my math is off, total time doesn't line up. I think the amount I'm reducing the DepsElapsed vars is not/double counting something.
-#
-#    #printf "Generation time: %.5f seconds\n", $genTotal;
-#    #printf "Compilation dependency logic time: %.5f seconds (%f)\n", $compileDepsElapsed, $cdeO;
-#    #printf "Link dependency logic time: %.5f seconds (%f)\n", $linkDepsElapsed, $ldeO;
-#    #printf "Total time: %.5f seconds (%.5f + %.5f + %.5f = %f)\n", $totalElapsed, $genTotal, $compileDepsElapsed, $linkDepsElapsed, ($genTotal+$compileDepsElapsed+$linkDepsElapsed);
-#
-#    printf "Total time: %.5f seconds\n", $totalElapsed;
-#}
+sub allDepsExist {
+    my $h = shift;
 
-# It took me too long to write this, now I don't remember what I was going to use it for.
-#sub mergeHashes {
-#    my ($dest, $src, $mode) = @_;
-#    while (my ($sk, $sv) = each %$src) {
-#        if (exists $dest->{$sk}) {
-#            if ($mode =~ /passive/i) {
-#                next;
-#            } elsif ($mode =~ /(replace|overwrite|override)/i) {
-#                $dest->{$sk} = $sv;
-#            } elsif ($mode =~ /die.*exist/i) {
-#                confess("$sk already exists in dest: dest = $dest->{$sk}, src = $sv");
-#            }
-#        } else {
-#            $dest->{$sk} = $sv;
-#        }
-#    }
-#}
+    # can do this on one line:
+    #return all {/1/} map { $_->{exists} } values %{$h->{dependsOn}};
+    # but I want some debug
 
+    my @y;
+    my @n;
+    for (values %{$h->{dependsOn}}) {
+        if ($_->{exists}) {
+            push @y, $_->{name};
+        } else {
+            push @n, $_->{name};
+        }
+    }
+    my $s = $h->{name}.': '.@y.'/'.(@y+@n).' deps exist';
+    if (@y) { $s .= ", yes = @y"; }
+    if (@n) { $s .= ", no = @n"; }
+    printDebug('allDepsExist', "$s\n");
 
-#sub someLoop {
-#    while (1) {
-#        @deps = determineDependencies($x);
-#        @new = arrayContainsAll(keys %{$ALL{$x}->{dependsOn}}, \@deps);
-#        if (@new) {
-#            
-#        } else {
-#            print "All deps for $x already known\n";
-#            $doneDeps = 1;
-#        }
-#    }
-#}
+    return @n==0;
+}
 
+sub genUE {
+    my $name = shift;
+    my $r = generate($name);
+    if ($r) {
+        my $e = -f $name ? 1 : 0;
+        unless ($e) { confess("generate returned true but -f returned false ($name)"); }
+        $ALL{$name}->{exists} = $e;
+        $ALL{$name}->{generationResult} = 'success';
+    } else {
+        $ALL{$name}->{generationResult} = 'fail';
+    }
+    return $r;
+}
 
