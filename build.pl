@@ -1,4 +1,4 @@
-our $VERSION = "10";
+our $VERSION = "11";
 use strict;
 use warnings FATAL => qw(uninitialized);
 use File::Basename qw(basename);
@@ -7,7 +7,7 @@ use FindBin;
 use Carp qw(confess);
 use Time::HiRes;
 use Getopt::Std;
-use List::Util qw(all);
+use List::Util qw(all max);
 
 use lib "$FindBin::Bin";
 use includes;
@@ -15,7 +15,7 @@ $includes::DIE_ON_MISSING = 0;
 
 use Data::Dumper;
 $Data::Dumper::Terse = 1;
-$Data::Dumper::Indent = 2;
+$Data::Dumper::Indent = 1;
 $Data::Dumper::Quotekeys = 0;
 $Data::Dumper::Sortkeys = 1;
 
@@ -33,53 +33,76 @@ my %FAILED_GEN;
 our ($opt_d);
 getopts('d:') or die $!;
 my @DEBUG_CATEGORIES;
-if ($opt_d) { @DEBUG_CATEGORIES = split(/[,\s]+/,$opt_d); }
+my $DEBUG_CATEGORY_WIDTH = 13;
+if ($opt_d) {
+    @DEBUG_CATEGORIES = split(/[,\s]+/,$opt_d);
+    if ($opt_d !~ /all/) {
+        $DEBUG_CATEGORY_WIDTH = max(map { length } @DEBUG_CATEGORIES);
+    }
+}
 
-my $BLAH_DEPTH = 0;
+my $DEPTH_DEBUG = 0;
 my %GEN_TIMES;
 
-my %DEPS;
-my %WHO_DEPENDS_ON;
+# struct Thing {
+#     Name name;
+#     List<Thing*> dependants;
+#     List<Thing*> dependsOn;
+# };
+# Map<Name, Thing*> ALL;
+my %ALL;
+
+my %TIMERS;
 
 my $target = shift or die "Need target";
 
 my ($base0, $type0) = basetype($target);
 
 printDebugC('phase', "begin compile dep gen phase\n");
-my $compile_deps = {};
-my $totalTime0 = [Time::HiRes::gettimeofday()];
-my $compileDepsTime0 = $totalTime0;
+timerStart('total','compileDeps');
+my $firstTarget;
 if ($type0 eq 'EXE') {
-    blah_v3("$base0.$OBJ_EXT", $compile_deps);
+    $firstTarget = "$base0.$OBJ_EXT";
+    #    addDeps($target, 'dependsOn', $firstTarget);
+    #    addDeps($firstTarget, 'dependants', $target);
 } else {
-    blah_v3($target, $compile_deps);
+    $firstTarget = $target;
 }
-my $compileDepsElapsed = Time::HiRes::tv_interval($compileDepsTime0, [Time::HiRes::gettimeofday()]);
+blah_v4($firstTarget);
+timerStop('compileDeps');
 printDebugC('phase', "end compile dep gen phase\n");
-printDebugC('total', "compile_deps:\n".Dumper($compile_deps)."\n");
+#printDebugC('total', "compile_deps:\n".Dumper($compile_deps)."\n");
 
-printGlobalDeps('deps');
+#printGlobalDeps('deps');
+#printDebugC('deps',"ALL{$firstTarget}:\n".Dumper($ALL{$firstTarget})."\n");
+printDebugC('deps',"post-compile deps phase:\n" . dumpDeps());
 
-my $link_deps = {};
-my $linkDepsTime0 = [Time::HiRes::gettimeofday()];
+# FIXME because I removed link_deps thing, I am missing knowledge of what's needed for exe.  None of the objs besides main.o are being built anymore.
 if ($type0 eq 'EXE') {
+    timerStart('linkDeps');
     printDebugC('phase',"begin link dep gen phase\n");
     while (1) {
 
         # Every src (and yet-to-exist obj) that was created during the dependency generation process for main.o is a dependency for main.exe.
         my $doneE = 0;
         {
-            my @srcs = uniq(
-                depsHdrToSrc($compile_deps),
-                depsHdrToSrc($link_deps));
-            @srcs = grep {-f} @srcs;
+            #my @srcs = uniq(
+            #    depsHdrToSrc($compile_deps),
+            #    depsHdrToSrc($link_deps));
+            #my @srcs = depsHdrToSrc_global(\%DEPS);
+            my @srcs = map { base($_).'.c' } grep {/\.$HDR_EXT$/} keys %ALL; # @src_ext_cheat
+
+            #@srcs = grep {-f} @srcs;
+            @srcs = grep { blah_v4($_) eq 'already_exists' } @srcs;
+
+            printDebugC('link',"existing srcs: @srcs\n");
             if (@srcs) {
                 my @objs = map { base($_).'.'.$OBJ_EXT } @srcs;
                 if (all { -f } @objs) {
-                    printDebugC('link',"all obj for src already exists\n");
+                    printDebugC('link',"all obj for src already exist: @objs\n");
                     $doneE = 1;
                 } else {
-                    for (@objs) { blah_v3($_, $link_deps); }
+                    for (@objs) { blah_v4($_); }
                 }
             } else {
                 $doneE = 1;
@@ -89,155 +112,81 @@ if ($type0 eq 'EXE') {
         # For all dependencies that are hdrs with no matching src, try to generate the src.  if successful, the obj is needed for linking main.exe
         my $doneLDO = 0;
         {
-            my @srcs = uniq(
-                depsHdrToSrc($compile_deps),
-                depsHdrToSrc($link_deps));
-            #my @generatedSrcs = grep { tryGenerate($_) eq 'succeeded' } @srcs;
-            my @generatedSrcs = grep { blah_v3($_)->{gen} eq 'succeeded' } @srcs;
+            my @srcs = map { base($_).'.c' } grep {/\.$HDR_EXT$/} keys %ALL; # @src_ext_cheat
+
+            my @generatedSrcs = grep { blah_v4($_) eq 'succeeded' } @srcs;
             if (@generatedSrcs) {
                 my @objs = map { base($_).'.'.$OBJ_EXT } @generatedSrcs;
-                for (@objs) { blah_v3($_, $link_deps); }
+                for (@objs) { blah_v4($_); }
             } else {
                 $doneLDO = 1;
             }
         }
         if ($doneE and $doneLDO) { last; }
     }
+    timerStop('linkDeps');
     printDebugC('phase',"end link dep gen phase\n");
 
-    printGlobalDeps('deps');
-    printDebugC('total', "link_deps:\n".Dumper($link_deps)."\n");
-    my @objs = ("$base0.$OBJ_EXT", grep /\.$OBJ_EXT$/, keys %$link_deps);
-    generate($target, @objs);
+    #printGlobalDeps('deps');
+    #printDebugC('deps',"ALL{$firstTarget}\n".Dumper($ALL{$firstTarget})."\n");
+    printDebugC('deps',"post-link deps phase:\n" . dumpDeps());
+    #printDebugC('total', "link_deps:\n".Dumper($link_deps)."\n");
+    generate($target, grep /\.$OBJ_EXT$/, keys %ALL);
 
 }
-my $linkDepsElapsed = Time::HiRes::tv_interval($linkDepsTime0, [Time::HiRes::gettimeofday()]);
 
+timerStop('total');
 
-my $totalElapsed = Time::HiRes::tv_interval($totalTime0, [Time::HiRes::gettimeofday()]);
-
-
-printTimes($totalElapsed, $compileDepsElapsed, $linkDepsElapsed, $compile_deps, $link_deps);
+printTimes_simple();
 
 exit;
 
 ####
 
-
-## for every known header file, there might be a matching src already existing (either generated earlier or typical file)
-#sub existingHdrSrcPairs {
-#    my $cinfo = shift;
-#    my %srcs;
-#    for (values %$cinfo) {
-#        my $cdeps = $_->{deps_global};
-#        if ($cdeps) {
-#            for (map { base($_).'.c' } grep {/\.$HDR_EXT$/} keys %$cdeps) { # @src_ext_cheat
-#                #if (-f) { $srcs{$_} = 1; }
-#                $srcs{$_} = 1;
-#            }
-#        }
-#    }
-#    my @srcsE = grep {-f} keys %srcs;
-#    printDebugC('link',"existingHdrSrcPairs: @srcsE\n");
-#    return @srcsE;
-#}
-
-sub depsHdrToSrc {
-    my $info = shift;
-    my @srcs;
-    for (values %$info) {
-        my $deps = $_->{deps_global};
-        if ($deps) {
-            for (map { base($_).'.c' } grep {/\.$HDR_EXT$/} keys %$deps) { # @src_ext_cheat
-                push @srcs, $_;
-            }
-        }
-    }
-    return uniq(@srcs);
-}
-
-
-
-sub blah_v3 {
+sub blah_v4 {
     my $x = shift;
-    my $total = shift || {};
-    printDebugC('blah',"blah_v3($x)\n");
-    $BLAH_DEPTH++;
+    printDebugC('blah',"blah_v4($x)\n");
+    $DEPTH_DEBUG++;
     my @Deps = determineDeps($x);
-    updateGlobalDeps($x, @Deps);
-    my $i = 0;
+    addDeps($x, 'dependsOn', @Deps);
+    for (@Deps) { addDeps($_, 'dependants', $x); }
+
     while (1) {
-        # the recursive call to blah updates DEPS, so can't just use output from determineDeps from before this loop
-        my @deps = keys %{$DEPS{$x}}; 
-        my @deps2 = keys %{$total->{$x}->{deps_global}};
-        #print "$x deps diff = (" . join(' ',arrayDiff(\@deps, \@deps2)) . "\n";
-        print "$x deps diff = " . Dumper(arrayDiff(\@deps, \@deps2)) . "\n";
         my $all = 1;
+        my @deps = keys %{$ALL{$x}->{dependsOn}};
         if (@deps) {
             my @done;
             my @notDone;
-            for my $d (@deps) {
-                if (not -f $d and not $FAILED_GEN{$d}) {
+            for (@deps) {
+                if (not -f $_ and not $FAILED_GEN{$_}) {
                     $all = 0;
-                    push @notDone, $d;
-                    my $info = blah_v3($d, $total);
+                    push @notDone, $_; #TODO move out - for (@notDone) { blah($_); }
+                    blah_v4($_);
                 } else {
-                    push @done, $d;
+                    push @done, $_;
                 }
             }
-            printDebugC('blah',''.scalar(@done).'/'.scalar(@deps)." deps done for $x: done = (@done), notDone = (@notDone)\n");
+            printDebugC('blah',@done.'/'.@deps." deps done for $x: done = (@done), notDone = (@notDone)\n");
         } else {
             printDebugC('blah',"no deps for $x\n");
         }
         if ($all) { last; }
-
-        $i++;
     }
 
     my $genState = tryGenerate($x);
 
-    if ($genState eq 'succeeded') {
-        # not sure this is necessary, try using brain later to figure it out
-        for my $f (keys %{$WHO_DEPENDS_ON{$x}}) {
+    if ($genState eq 'succeeded' or $genState eq 'already_exists') {
+        # Reprocess the dependencies for everything that depends on the target that was just generated.  (Because since it was just generated, there might be previously-unseen #includes in it, for example.)
+        for my $f (keys %{$ALL{$x}->{dependants}}) {
             my @fDeps = determineDeps($f);
-            my @newDeps = updateGlobalDeps($f, @fDeps);
-            #print "$f (depends on $x): new deps = @newDeps\n";
-            #todo? recursively update all WHO_DEPENDS_ON?
+            # don't think I need this - GenIncGen.h doesn't have Gen.h as a dependant, despite revealing Gen.h to main.o (which is covered in the line after this)
+            #addDeps($x, 'dependants', @fDeps);
+            addDeps($f, 'dependsOn', @fDeps);
         }
     }
 
-    my $infoOut = {
-        target => $x,
-        gen => $genState,
-        deps_immediate => \@Deps, # aref
-        deps_global => $DEPS{$x}, # href, v=depth
-        depth => $BLAH_DEPTH
-    };
-    printDebugC('info',$x.': '.Dumper($infoOut)."\n");
-    $total->{$x} = $infoOut;
-
-    $BLAH_DEPTH--;
-    return $infoOut;
-}
-
-sub updateGlobalDeps {
-    my $target = shift;
-    return unless @_;
-    my @newdeps;
-    my @newwho;
-    for (@_) {
-        # "unless exists" and iteration/depth value is just for debug purposes, to see in which iteration something was discovered
-        unless (exists $DEPS{$target}->{$_}) {
-            push @newdeps, $_;
-            $DEPS{$target}->{$_} = $BLAH_DEPTH;
-        }
-        unless (exists $WHO_DEPENDS_ON{$_}->{$target}) {
-            push @newwho, $_;
-            $WHO_DEPENDS_ON{$_}->{$target} = $BLAH_DEPTH;
-        }
-    }
-    printDebugC('updateGlobalDeps',"$target += @newdeps (@newwho)\n");
-    return @newdeps;
+    $DEPTH_DEBUG--;
+    return $genState;
 }
 
 sub determineDeps {
@@ -257,13 +206,42 @@ sub determineDeps {
         # push @deps - nothing now, maybe something for .idl
     } elsif ($type eq 'EXE') {
         # It's different enough that I couldn't figure out a good way to do it here.
-        die "exe dependency logic handled at top of script instead";
+        confess("exe dependency logic handled at top of script instead");
         #push @deps, "$base.$OBJ_EXT";
     } else {
         die "script not done for $type files yet (target = $target)";
     }
-    printDebugC('determineDeps',"processDependencies($target) = @deps\n");
+    printDebugC('detDeps',"$target: @deps\n");
     return @deps;
+}
+
+# Never used this, moving to v12 to try it out
+# Basically should be a replacement for part of blah_v4 because that function is doing both deps and gen, which I think is limiting dependency discovery on reruns of the script before a clean.
+sub determineDepsRecursive {
+    $DEPTH_DEBUG++;
+    my $x = shift;
+    my @deps = determineDeps($x);
+    my @known = keys %{$ALL{$x}->{dependsOn}};
+    my $diff = arrayDiff(\@known, \@deps);
+    #    if (%$diff) {
+    #        my @new;
+    #        while (my ($val, $which) = each %$diff) {
+    #            if ($which eq 'b') {
+    #                push @new, $val;
+    #            } else {
+    #                confess("which = ".($which?$which:'undef') ." for val = $val after array diff between known (@known) and deps (@deps)");
+    #            }
+    #        }
+    #        printDebugC('detDepsR', "$x: new = (@new), all = (@deps)\n");
+    #        if (@new) {
+    #            addDeps($x, 'dependsOn', @Deps);
+    #            for (@new) { addDeps($_, 'dependants', $x); }
+    #        }
+    #    }
+    addDeps($x, 'dependsOn', @deps);
+    for (@deps) { addDeps($_, 'dependants', $x); }
+    for (@deps) { determineDepsRecursive($_); }
+    $DEPTH_DEBUG--;
 }
 
 sub tryGenerate {
@@ -330,7 +308,7 @@ sub generateObj {
     }
     unless ($src) { confess("src for $x does not exist"); }
 
-    my $cmd = "cl /nologo /c /Fo$x $src";
+    my $cmd = "cl /nologo /c /Fo$x $src > NUL";
     printDebugC('cmd',"$cmd\n");
     if (system($cmd)) {
         printError("generateObj: command failed: '$cmd'\n");
@@ -357,7 +335,7 @@ sub basetype {
     if ($x !~ /\./) {
         return ($x, 'EXE');
     }
-    unless ($x =~ /(.+)\.(.+)$/) {
+    unless ($x =~ /(.+)\.(.+)$/) { # FIXME isn't this going to break when $x includes the directory?
         confess("failed to determine basetype for '$x'");
     }
     my $base = $1;
@@ -387,28 +365,6 @@ sub type {
     return $type;
 }
 
-sub printGlobalDeps {
-    my $cat = shift || 'deps';
-    printDebugC($cat,formatDepHash('DEPS',\%DEPS));
-    printDebugC($cat,formatDepHash('WHO_DEPENDS_ON', \%WHO_DEPENDS_ON));
-}
-
-sub formatDepHash {
-    my ($cat, $name, $href) = @_;
-    my $text = '';
-    $text .= $name;
-    for my $k (keys %{$href}) {
-        my @s;
-        for my $f (sort keys %{$href->{$k}}) {
-            my $i = $href->{$k}->{$f};
-            push @s, "$f($i)";
-        }
-        $text .= "\n\t$k: (" . join(', ',@s) . ')';
-    }
-    $text .= "\n";
-    return $text;
-}
-
 sub printError {
     print STDERR 'ERROR ['.NAME."] @_";
 }
@@ -420,7 +376,7 @@ sub printInfo {
 sub printDebug {
     if (DEBUG) {
         my $pad = '';
-        for (1..$BLAH_DEPTH) { $pad .= '- '; }
+        for (1..$DEPTH_DEBUG) { $pad .= '- '; }
         print STDOUT '['.NAME."][debug] $pad@_";
     }
 }
@@ -430,9 +386,9 @@ sub printDebugC {
         my $cat = shift;
         if (grep { /^($cat|all)$/i } @DEBUG_CATEGORIES) {
             my $pad = '';
-            for (1..$BLAH_DEPTH) { $pad .= '- '; }
-            #print STDOUT '['.NAME."][debug][$cat] $pad@_";
-            printf STDOUT '[%s][debug][%-8s] %s%s', NAME, $cat, $pad, @_;
+            for (1..$DEPTH_DEBUG) { $pad .= '- '; }
+            printf STDOUT '[%s][debug][%-*s] %s%s',
+                NAME, $DEBUG_CATEGORY_WIDTH, $cat, $pad, @_;
         }
     }
 }
@@ -440,7 +396,7 @@ sub printDebugC {
 sub arrayEq {
     my ($a, $b) = @_;
     if (not defined $a and not defined $b) { return 1; }
-    elsif (not defined $a or not defined $b) { return 0; }
+    if (not defined $a or not defined $b) { return 0; }
     if (scalar(@$a) != scalar(@$b)) { return 0; }
     my @A = sort @$a;
     my @B = sort @$b;
@@ -457,59 +413,19 @@ sub arrayDiff {
     if (not defined $a and not defined $b) { return undef; }
     elsif (not defined $a) { return $b; }
     elsif (not defined $b) { return $a; }
-    my @d;
     my %d;
-    for my $i (@$a) { unless (grep {$i eq $_} @$b) { push @d, $i; $d{$i} = 'a'; } }
-    for my $i (@$b) { unless (grep {$i eq $_} @$a) { push @d, $i; $d{$i} = 'b'; } }
-    #return @d;
+    for my $i (@$a) { unless (grep {$i eq $_} @$b) { $d{$i} = 'a'; } }
+    for my $i (@$b) { unless (grep {$i eq $_} @$a) { $d{$i} = 'b'; } }
     return \%d;
 }
 
-sub printTimes {
-    my ($totalElapsed, $compileDepsElapsed, $linkDepsElapsed, $cdeps, $ldeps) = @_;
-
-    # originals, to check my work
-    my $cdeO = $compileDepsElapsed;
-    my $ldeO = $linkDepsElapsed;
-
-    my %genTotals;
-    while (my ($f,$t) = each %GEN_TIMES) {
-        my $type = type($f);
-        if (exists $genTotals{$type}) {
-            $genTotals{$type} += $t;
-        } else {
-            $genTotals{$type} = $t;
-        }
+sub printTimes_simple {
+    my @names = keys %TIMERS;
+    my @labels = map { "$_ time" } keys %TIMERS;
+    my $max = max(map { length } @labels);
+    for (0..@names-1) {
+        printf("%-*s : %.5f\n", $max, $labels[$_], $TIMERS{$names[$_]}->{elapsed});
     }
-
-    for my $f (keys %$cdeps) {
-        if (exists $GEN_TIMES{$f}) {
-            #print "compileDE -= $GEN_TIMES{$f} ($f)\n";
-            $compileDepsElapsed -= $GEN_TIMES{$f};
-        }
-    }
-
-    for my $f (keys %$ldeps) {
-        if (exists $GEN_TIMES{$f}) {
-            #print "linkDE -= $GEN_TIMES{$f} ($f)\n";
-            $linkDepsElapsed -= $GEN_TIMES{$f};
-        }
-    }
-
-    my $genTotal = 0;
-    while (my ($type, $time) = each %genTotals) {
-        #printf "$type generation time: %.5f seconds\n", $time;
-        $genTotal += $time;
-    }
-
-    # FIXME my math is off, total time doesn't line up. I think the amount I'm reducing the DepsElapsed vars is not/double counting something.
-
-    #printf "Generation time: %.5f seconds\n", $genTotal;
-    #printf "Compilation dependency logic time: %.5f seconds (%f)\n", $compileDepsElapsed, $cdeO;
-    #printf "Link dependency logic time: %.5f seconds (%f)\n", $linkDepsElapsed, $ldeO;
-    #printf "Total time: %.5f seconds (%.5f + %.5f + %.5f = %f)\n", $totalElapsed, $genTotal, $compileDepsElapsed, $linkDepsElapsed, ($genTotal+$compileDepsElapsed+$linkDepsElapsed);
-
-    printf "Total time: %.5f seconds\n", $totalElapsed;
 }
 
 # I don't have List::Util 1.45
@@ -535,87 +451,113 @@ sub assertUniq {
     }
 }
 
-#sub srcAlreadyExists_global {
-#    my @allHdrs;
-#    for my $i (keys %DEPS) {
-#        for my $j (keys %{$DEPS{$i}}) {
-#            if ($j =~ /\.$HDR_EXT$/) {
-#                unless (-f $j) { die "$j should already exist as part of compile gen"; }
-#                push @allHdrs, $j;
-#            }
-#        }
-#    }
-#    my %exists;
-#    for (@allHdrs) {
-#        my $src = base($_) . '.' . 'c'; # @src_ext_cheat
-#        if (-f $src) {
-#            $exists{$src} = 1;
-#        }
-#    }
+sub addDeps {
+    my $x = shift;
+    my $key = shift;
+    createIfMissing($x);
+    createIfMissing(@_);
+    my @new;
+    for (@_) {
+        unless (exists $ALL{$x}->{$key}->{$_}) {
+            $ALL{$x}->{$key}->{$_} = $ALL{$_};
+            push @new, $_;
+        }
+    }
+    printDebugC('new',"$x $key += @new\n");
+}
+
+sub createIfMissing {
+    for (@_) {
+        if (not exists $ALL{$_}) {
+            $ALL{$_} = {
+                name => $_,
+                dependsOn => {},
+                dependants => {}
+            };
+        }
+    }
+}
+
+sub timerStart {
+    my $time = [Time::HiRes::gettimeofday()];
+    for (@_) {
+        $TIMERS{$_}->{start} = $time;
+    }
+}
+
+sub timerStop {
+    my $time = [Time::HiRes::gettimeofday()];
+    for (@_) {
+        my $elapsed = Time::HiRes::tv_interval($TIMERS{$_}->{start}, $time);
+        $TIMERS{$_}->{end} = $time;
+        $TIMERS{$_}->{elapsed} = $elapsed;
+    }
+    return timerGet(@_);
+}
+
+sub timerGet {
+    my @elapsed = map { $TIMERS{$_}->{elapsed} } @_;
+    return @elapsed==1 ? @elapsed : $elapsed[0];
+}
+
+sub dumpDeps {
+    my $s = '';
+    for my $i (keys %ALL) {
+        $s .= $i
+            . "\n\tdependsOn: "
+            . join(' ',keys $ALL{$i}->{dependsOn})
+            . "\n\tdependants: "
+            . join(' ',keys $ALL{$i}->{dependants})
+            . "\n";
+    }
+    return $s;
+}
+
+#sub printTimes {
+#    my ($totalElapsed, $compileDepsElapsed, $linkDepsElapsed, $cdeps, $ldeps) = @_;
 #
-#    printDebugC('link','srcAlreadyExists: ' . join(' ', keys %exists) . "\n");
-#    return keys %exists;
-#}
+#    # originals, to check my work
+#    my $cdeO = $compileDepsElapsed;
+#    my $ldeO = $linkDepsElapsed;
 #
-#sub tryToGenerateMissingSrcs {
-#    my $info = shift;
-#    my @srcs = depsHdrToSrc($info);
-#    my @generatedSrcs;
-#    for my $x (@srcs) {
-#        my $genState = tryGenerate($x);
-#        if ($genState eq 'succeeded') {
-#            #push @generatedSrcs, base($x).'.'.$OBJ_EXT;
-#            push @generatedSrcs, $x;
-#        }
-#    }
-#    printDebugC('link','tryToGenerateMissingSrcs: generated '
-#        . (@generatedSrcs?join(' ',@generatedSrcs):'0 srcs') . "\n");
-#    return @generatedSrcs;
-#}
-#
-#sub linkDepObjs {
-#    # all the headers should be created at this point
-#    my @hdrs;
-#    for my $i (keys %DEPS) {
-#        for my $j (keys %{$DEPS{$i}}) {
-#            if ($j =~ /\.$HDR_EXT$/) {
-#                unless (-f $j) { die "$j should already exist as part of compile gen"; }
-#                push @hdrs, $j;
-#            }
-#        }
-#    }
-#    my %tryToGenSrc;
-#    for (@hdrs) {
-#        my $src = base($_) . '.' . 'c'; # @src_ext_cheat
-#        $tryToGenSrc{$src} = 1;
-#    }
-#    my %linkDepObjs;
-#    my %srcGenFailed;
-#    my %srcAlreadyExists;
-#    for (keys %tryToGenSrc) {
-#        if (-f) {
-#            $srcAlreadyExists{$_} = 1;
+#    my %genTotals;
+#    while (my ($f,$t) = each %GEN_TIMES) {
+#        my $type = type($f);
+#        if (exists $genTotals{$type}) {
+#            $genTotals{$type} += $t;
 #        } else {
-#            if ($FAILED_GEN{$_}) {
-#                $srcGenFailed{$_} = 1;
-#            } elsif (generate($_)) { # if I'm feeling fancy, maybe generate should be replaced with 'blah'??
-#                my $obj = base($_) . ".$OBJ_EXT";
-#                $linkDepObjs{$obj} = 1;
-#            } else {
-#                $srcGenFailed{$_} = 1;
-#            }
+#            $genTotals{$type} = $t;
 #        }
 #    }
-#    #my @objAlreadyExists;
-#    #my @objDoesNotExist;
 #
-#    printDebugC('link','linkDepObjs: ' . join(' ', keys %linkDepObjs) . "\n");
-#    printDebugC('link','srcGenFailed: ' . join(' ', keys %srcGenFailed) . "\n");
-#    #printDebugC('link',"srcAlreadyExists\n\t" . join("\n\t",keys %srcAlreadyExists) . "\n");
-#    #print "objAlreadyExists\n\t" . join("\n\t",@objAlreadyExists) . "\n";
-#    #print "objDoesNotExist\n\t"  . join("\n\t",@objDoesNotExist)  . "\n";
+#    for my $f (keys %$cdeps) {
+#        if (exists $GEN_TIMES{$f}) {
+#            #print "compileDE -= $GEN_TIMES{$f} ($f)\n";
+#            $compileDepsElapsed -= $GEN_TIMES{$f};
+#        }
+#    }
 #
-#    return keys %linkDepObjs;
+#    for my $f (keys %$ldeps) {
+#        if (exists $GEN_TIMES{$f}) {
+#            #print "linkDE -= $GEN_TIMES{$f} ($f)\n";
+#            $linkDepsElapsed -= $GEN_TIMES{$f};
+#        }
+#    }
+#
+#    my $genTotal = 0;
+#    while (my ($type, $time) = each %genTotals) {
+#        #printf "$type generation time: %.5f seconds\n", $time;
+#        $genTotal += $time;
+#    }
+#
+#    # FIXME my math is off, total time doesn't line up. I think the amount I'm reducing the DepsElapsed vars is not/double counting something.
+#
+#    #printf "Generation time: %.5f seconds\n", $genTotal;
+#    #printf "Compilation dependency logic time: %.5f seconds (%f)\n", $compileDepsElapsed, $cdeO;
+#    #printf "Link dependency logic time: %.5f seconds (%f)\n", $linkDepsElapsed, $ldeO;
+#    #printf "Total time: %.5f seconds (%.5f + %.5f + %.5f = %f)\n", $totalElapsed, $genTotal, $compileDepsElapsed, $linkDepsElapsed, ($genTotal+$compileDepsElapsed+$linkDepsElapsed);
+#
+#    printf "Total time: %.5f seconds\n", $totalElapsed;
 #}
 
 # It took me too long to write this, now I don't remember what I was going to use it for.
@@ -635,4 +577,19 @@ sub assertUniq {
 #        }
 #    }
 #}
+
+
+#sub someLoop {
+#    while (1) {
+#        @deps = determineDependencies($x);
+#        @new = arrayContainsAll(keys %{$ALL{$x}->{dependsOn}}, \@deps);
+#        if (@new) {
+#            
+#        } else {
+#            print "All deps for $x already known\n";
+#            $doneDeps = 1;
+#        }
+#    }
+#}
+
 

@@ -37,3 +37,19 @@ v9 is as I want it, all target types work as they should. still want to do more 
 
 #### v10
 v10 cleaned up the link dep logic quite a bit. still not as clean as I would like it.
+
+#### v11
+v11 is hopefully for removing some of the global hashes.  because I want to see if it's awful to not have them.  kind of running out of meaningful stuff to do tbh.
+    updateGlobalDeps_v2 - was replacing original with this. not "Global" anymore.
+    deps_global in the local hash should have the same values as DEPS. ideally could replace global DEPS?
+    src exts (hdr exts, obj exts)
+
+I am breaking v11 pretty bad.  might be able to go back to blah_v3.  but better to just go back to v10 if v11 becomes irredeemable.
+
+# XXX I want to make stuff in ALL all hrefs to each other. Is that going to cause maniac refs going everywhere? Probably yes, but we'll see.
+struct Thing {
+    Name name;
+    List<Thing*> dependants;
+    List<Thing*> dependantOn;
+};
+Map<Name, Thing*> ALL;
