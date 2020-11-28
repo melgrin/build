@@ -28,3 +28,6 @@ the chain backwards thing that happens for exes needing objs from srcs of hdrs d
 why doesn't v7 discover that main.exe depends on B.o?
 
 backing out the obj after failing to gen the src in the context of exe link dep is hard.  I think I had a pretty good strategy several versions ago.  even though if($isExec) all over the place is ugly, that's what I need to do.  Mayybe I can make the flag not global, but not sure it matters.  But I'm having a really hard time figuring out a relatively general way to maybe need to make an obj based on a src that's maybe generated that's also maybe nonexistent despite there being a header (which could also maybe be generated).
+
+#### v8
+with some nasty stuff up front, v8 works.  the thing that works is '..\v8.pl main.o'.  because it's hardcoded to always do the exec logic, it does that too.  so it produces all the other objs, like A.o, B.o, and the Gen ones too (and the gen srcs/hdrs to get there).  needs a lot of cleanup, but moving onto next version to do that so I don't break this.
