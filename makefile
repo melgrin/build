@@ -1,6 +1,6 @@
-#debug: build.cpp build.h
-#	cl /Z7 /EHsc /nologo /std:c++17 /DDEBUG $<
-#
+debug: build.cpp build.h
+	cl /Z7 /EHsc /nologo /std:c++17 /DDEBUG $<
+
 #release: build.cpp build.h
 #	cl /EHsc /nologo /std:c++17 $<
 

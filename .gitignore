@@ -3,4 +3,5 @@
 *.exe
 *.pdb
 *.ilk
+*.rdbg
 example/*Gen*

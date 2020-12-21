@@ -123,6 +123,7 @@ bool fileExists(const string& name) {
 Set<string> findIncludes(const string& name) {
     Set<string> incs;
     _findIncludes(name, &incs);
+    /*if (incs.size() > 0) {*/ printDebug("findIncs", "% includes %\n", name, incs); //}
     return incs;
 }
 
@@ -131,7 +132,7 @@ void _findIncludes(const string& name, Set<string>* incs) {
     {
         ifstream in(name.c_str());
         if (!in) {
-            printError("failed to open %s\n", name);
+            printError("failed to open %\n", name);
             return;
         }
         string line;
@@ -144,6 +145,7 @@ void _findIncludes(const string& name, Set<string>* incs) {
         }
     }
     For (it, local) {
+        printDebug("findIncludes", "% += %\n", name, *incs);
         incs->insert(it);
         if (fileExists(it)) {
             _findIncludes(it, incs);
@@ -169,7 +171,7 @@ Set<Name> determineDeps2(const Name& target) {
     } else if (type == EXE) {
         deps.insert(base + OBJ_EXT); // maybe also want to search ALL
     } else {
-        printError("script not done for % files yet (target = %)\n", type, target);
+        printError("incomplete for % files (target = %)\n", type, target);
     }
     if (deps.size() > 0) {
         printDebug("detDeps","target: %\n", deps);
@@ -202,7 +204,8 @@ bool generateObj(const string& name) {
     }
 
     ostringstream cmd;
-    cmd << "cl /nologo /c /Fo" << name << " " << src << " > /dev/null";
+    //cmd << "cl /nologo /c /Fo" << name << " " << src << " > /dev/null";
+    cmd << "cl /nologo /c /Fo" << name << " " << src;
     printDebug("cmd","%\n", cmd.str());
     if (system(cmd.str().c_str())) {
         printError("generateObj: command failed: '%'\n", cmd.str());
@@ -327,8 +330,8 @@ bool allDepsExist(Entry* e) {
         else { no.insert(it->name); }
     }
     ostringstream debug;
-    if (yes.size() > 0) { debug << ", yes = " << yes; }
-    if (no.size() > 0) { debug << ", no = " << no; }
+    if (yes.size() > 0) { debug << "yes = " << yes << " "; }
+    if (no.size() > 0) { debug << "no = " << no; }
     printDebug("allDepsExist", "%: %\n", e->name, debug.str());
     return no.size() == 0;
 #else
