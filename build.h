@@ -45,7 +45,7 @@ void tprintf(const char* format, T value, Targs... Fargs) {
     }
 }
 
-#define printError(FMT, ...) tprintf("Error at line %: " FMT, __LINE__, __VA_ARGS__); exit(EXIT_FAILURE)
+#define printError(FMT, ...) tprintf("Error at line %: " FMT, __LINE__, __VA_ARGS__)
 
 #define printDebug(CATEGORY, FMT, ...) do { if (debugEnabled(CATEGORY)) { tprintf("[" CATEGORY "] " FMT, __VA_ARGS__); } } while (0)
 
@@ -87,7 +87,6 @@ Type getType(const string& name);
 bool debugEnabled(const char* category);
 time_t getFileModificationTime(const string& name);
 bool generate_v2(Entry* e);
-Set<string> findIncludes(const string& name);
 Set<Name> determineDeps2(const Name& target);
 
 // specific to my example
@@ -131,7 +130,8 @@ void _main(const string& target);
 
 bool fileExists(const string& name);
 
-Set<string> findIncludes(const string& name);
-void _findIncludes(const string& name, Set<string>* incs);
+// Everything in the Set<char*> is allocated on the heap!
+Set<char*> findIncludes(const string& name);
+void _findIncludes(const char* name, Set<char*>* incs);
 
 #endif // build_h

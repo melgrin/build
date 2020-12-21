@@ -31,6 +31,7 @@ Type getType(const string& name) {
     if (strcmp(EXE_EXT, ext.c_str()) == 0) return EXE;
 
     printError("unknown file extension '%' from '%'\n", ext, name);
+    exit(EXIT_FAILURE);
 }
 
 void split(vector<string>& out, const string& s, char delimiter) {
@@ -94,6 +95,7 @@ time_t getFileModificationTime(const string& name) {
     struct stat info;
     if (stat(name.c_str(), &info) != 0) {
         printError("%: %\n", name, strerror(errno));
+        exit(EXIT_FAILURE);
     }
     return info.st_mtime;
 }
@@ -120,32 +122,68 @@ bool fileExists(const string& name) {
     return filesystem::is_regular_file(name);
 }
 
-Set<string> findIncludes(const string& name) {
-    Set<string> incs;
-    _findIncludes(name, &incs);
+Set<char*> findIncludes(const string& name) {
+    Set<char*> incs;
+    _findIncludes(name.c_str(), &incs);
     /*if (incs.size() > 0) {*/ printDebug("findIncs", "% includes %\n", name, incs); //}
     return incs;
 }
 
-void _findIncludes(const string& name, Set<string>* incs) {
-    Set<string> local;
+// the char*s in the incs set are newly allocated by this function
+void _findIncludes(const char* name, Set<char*>* incs) {
+    Set<char*> local;
     {
-        ifstream in(name.c_str());
-        if (!in) {
-            printError("failed to open %\n", name);
+        FILE* fp = fopen(name, "r");
+        if (!fp) {
+            printError("failed to open %: %\n", name, strerror(errno));
             return;
         }
+
+        // can't do this without extra logic for handling failure to get library headers, like stdio.h
+        //regex pattern("#\\s*include\\s+[<\"](.+)[>\"]\\s*\n");
+        regex pattern("#\\s*include\\s+\"(.+)\"\\s*\n");
+
+        char buf[128];
+        while (1) {
+            fgets(buf, sizeof(buf), fp);
+            if (feof(fp)) break;
+            if (ferror(fp)) {
+                printError("fgets failed");
+            } else {
+                smatch match;
+                string tmp(buf); // XXX there's a CharT* overload for regex_match according to tbe documentation, but it doesn't compile (?)
+                //printDebug("findIncsLine", "%", buf);
+                if (regex_match(tmp, match, pattern)) {
+                    //printDebug("findIncsMatch", "% includes %\n", name, match[1]);
+                    strncpy(buf, match[1].str().c_str(), sizeof(buf)); // some const& compiler errors I don't understsand is going on with this, so just copy out
+                    if (local.find(buf) == local.end()) {
+                        size_t n = strlen(buf) + 1; // + 1 for null
+                        char* s = (char*) malloc(n); // XXX leak
+                        memcpy(s, buf, n);
+                        bool added = local.insert(s).second;
+                        assert(added);
+                    }
+                }
+            }
+        }
+
+        fclose(fp);
+
+        /*
         string line;
-        regex pattern("#\\s*include\\s+[<\"](\\.+)[>\"]");
-        smatch match;
+        const size_t len = 128;
+        char debug[len];
         while (getline(in, line)) {
+            strncpy(debug, line.c_str(), len);
+            debug[len-1] = '\0';
             if (regex_match(line, match, pattern)) {
                 local.insert(match[1]);
             }
         }
+        */
     }
+    printDebug("findIncludes", "% += %\n", name, local);
     For (it, local) {
-        printDebug("findIncludes", "% += %\n", name, *incs);
         incs->insert(it);
         if (fileExists(it)) {
             _findIncludes(it, incs);
@@ -161,7 +199,7 @@ Set<Name> determineDeps2(const Name& target) {
         string src = base + SRC_EXT;
         deps.insert(src);
         if (fileExists(src)) { // might be generated
-            Set<string> incs = findIncludes(src);
+            Set<char*> incs = findIncludes(src);
             Forc (it, incs) { deps.insert(it); }
         }
     } else if (type == HDR) {
@@ -172,6 +210,7 @@ Set<Name> determineDeps2(const Name& target) {
         deps.insert(base + OBJ_EXT); // maybe also want to search ALL
     } else {
         printError("incomplete for % files (target = %)\n", type, target);
+        exit(EXIT_FAILURE);
     }
     if (deps.size() > 0) {
         printDebug("detDeps","target: %\n", deps);
@@ -182,9 +221,12 @@ Set<Name> determineDeps2(const Name& target) {
 bool _copy_gen(const string& name) {
     string from = "gen/" + name;
     string to = name;
-    bool success = filesystem::copy_file(from, to);
+    error_code err;
+    bool success = filesystem::copy_file(from, to, err);
     if (success) {
         printDebug("cmd", "copy(%, %)\n", from, to);
+    } else {
+        printDebug("cmd", "failed copy(%, %): %\n", from, to, err);
     }
     return success;
 }
@@ -201,6 +243,7 @@ bool generateObj(const string& name) {
     string src = getBase(name) + SRC_EXT;
     if (!fileExists(src)) {
         printError("src for obj % does not exist\n", name);
+        return false;
     }
 
     ostringstream cmd;
@@ -209,6 +252,7 @@ bool generateObj(const string& name) {
     printDebug("cmd","%\n", cmd.str());
     if (system(cmd.str().c_str())) {
         printError("generateObj: command failed: '%'\n", cmd.str());
+        return false;
     }
     return true;
 }
@@ -226,6 +270,7 @@ bool generateExe(const string& name) { // FIXME doesn't mesh with typedef Genera
     printDebug("cmd","%\n", cmd.str());
     if (system(cmd.str().c_str())) {
         printError("generateExe: command failed: '%'\n", cmd.str());
+        return false;
     }
     return true;
 }
@@ -236,6 +281,7 @@ GenerationFunction determineGenFn(Type type) {
     if (type == OBJ) { return &generateObj; }
     if (type == EXE) { return &generateExe; }
     printError("Don't know how to generate files of type %", type);
+    exit(EXIT_FAILURE);
 }
 
 void addIfMissing(const string& name) {
@@ -307,7 +353,10 @@ void add(const string& name) {
 ostream& dumpDeps(ostream& s) {
     Forc (it, ALL) {
         const Entry* e = it.second;
-        if (e->exists && e->timestamp == 0) { printError("% exists but has no timestamp\n", e->name); }
+        if (e->exists && e->timestamp == 0) {
+            printError("% exists but has no timestamp\n", e->name);
+            exit(EXIT_FAILURE);
+        }
         s << e->name
           << "\n\texists: " << boolalpha << e->exists
           << "\n\tdependsOn:";
@@ -362,6 +411,7 @@ sub anyDepsNewerRecursive {
 Set<Entry*> newerDeps(Entry* e) {
     if (!e->exists) {
         printError("Unable to determine if % is newer than its dependencies because it does not exist.", e->name);
+        exit(EXIT_FAILURE);
     }
 
     Set<Entry*> newer;
@@ -494,7 +544,7 @@ int main(int argc, char** argv) {
         try {
             _main(argv[i]);
         } catch (const exception& e) {
-            fprintf(stderr, "Error: caught exception during %s generation: %s\n",
+            printError("caught exception during % generation: %\n",
                     argv[i], e.what());
         }
     }
