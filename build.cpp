@@ -213,7 +213,7 @@ Set<Name> determineDeps2(const Name& target) {
         exit(EXIT_FAILURE);
     }
     if (deps.size() > 0) {
-        printDebug("detDeps","target: %\n", deps);
+        printDebug("detDeps","%: %\n", target, deps);
     }
     return deps;
 }
@@ -291,7 +291,7 @@ void addIfMissing(const string& name) {
     }
 }
 
-void _addDep(const string& name, Set<Entry*>& deps, const Set<Name>& rest) {
+void _addDep(const string& name, Set<Entry*>& deps, const Set<Name>& rest, const char* debugRelation) {
     addIfMissing(name);
     Set<Name> newlyAdded;
     Forc (it, rest) {
@@ -302,7 +302,7 @@ void _addDep(const string& name, Set<Entry*>& deps, const Set<Name>& rest) {
         }
     }
     if (newlyAdded.size() > 0) {
-        printDebug("addDeps","% dependsOn += %\n", name, rest);
+        printDebug("addDeps","% % += %\n", name, debugRelation, rest);
     }
     //return newlyAdded.size();
 }
@@ -310,13 +310,13 @@ void _addDep(const string& name, Set<Entry*>& deps, const Set<Name>& rest) {
 void addDependsOn(const string& name, const Set<Name>& rest) {
     addIfMissing(name);
     Forc (it, rest) { addIfMissing(it); }
-    _addDep(name, ALL[name]->dependsOn, rest);
+    _addDep(name, ALL[name]->dependsOn, rest, "dependsOn");
 }
 
 void addDependants(const string& name, const Set<Name>& rest) {
     addIfMissing(name);
     Forc (it, rest) { addIfMissing(it); }
-    _addDep(name, ALL[name]->dependants, rest);
+    _addDep(name, ALL[name]->dependants, rest, "dependants");
 }
 
 void updateDepsRecursive(Entry* e) {

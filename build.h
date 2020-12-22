@@ -104,7 +104,7 @@ GenerationFunction determineGenFn(Type type);
 
 void addIfMissing(const string& name);
 
-void _addDep(const string& name, Set<Entry*>& deps, const Set<Name>& rest);
+void _addDep(const string& name, Set<Entry*>& deps, const Set<Name>& rest, const char* debugRelation = "");
 
 void addDependsOn(const string& name, const Set<Name>& rest);
 
