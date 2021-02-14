@@ -89,6 +89,8 @@ time_t getFileModificationTime(const string& name);
 bool generate_v2(Entry* e);
 Set<Name> determineDeps2(const Name& target);
 
+bool copyWholeFile(const string& source, const string& destination);
+
 // specific to my example
 // I just have the "generate-able" files in a subdirectory
 bool _copy_gen(const string& name);

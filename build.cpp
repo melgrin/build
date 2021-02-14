@@ -218,9 +218,100 @@ Set<Name> determineDeps2(const Name& target) {
     return deps;
 }
 
+bool copyWholeFile(const string& source, const string& destination) {
+    
+    errno = 0;
+
+    FILE* src = fopen(source.c_str(), "rb");
+    if (!src) {
+        printError("failed to open %: %\n", source, strerror(errno));
+        return false;
+    }
+
+    // This intentionally overwrites the old one if it exists.
+    // Mainly this is to update the file time; filesystem::copy_file
+    // was conveniently preserving the source's time, which defeats the
+    // dependency age check.
+    FILE* dest = fopen(destination.c_str(), "wb");
+    if (!dest) {
+        printError("failed to open %: %\n", destination, strerror(errno));
+        fclose(dest);
+        return false;
+    }
+
+    if (fseek(src, 0, SEEK_END)) {
+        printError("% seek to end failed: %\n", source, strerror(errno));
+        fclose(src);
+        fclose(dest);
+        return false;
+    }
+    const long int size = ftell(src);
+    if (-1 == size) {
+        printError("% ftell failed: %\n", source, strerror(errno));
+        fclose(src);
+        fclose(dest);
+        return false;
+    }
+    if (fseek(src, 0, SEEK_SET)) {
+        printError("% seek to beginning failed: %\n", source, strerror(errno));
+        fclose(src);
+        fclose(dest);
+        return false;
+    }
+
+    //char buf[size];
+    void* buf = malloc(size);
+    if (buf == 0) {
+        printError("failed to allocate %-byte file copy buffer", size);
+        fclose(src);
+        fclose(dest);
+        return false;
+    }
+
+    size_t numRead = fread(buf, 1, size, src);
+    if (numRead != size) {
+        tprintf("numRead = %, size = %\n", numRead, size);
+        assert(!feof(src));
+        assert(ferror(src));
+        printError("failed to read file %: %\n", source, strerror(errno));
+        fclose(src);
+        fclose(dest);
+        free(buf);
+        return false;
+    }
+
+    size_t numWritten = fwrite(buf, 1, size, dest);
+    if (numWritten != size) {
+        assert(ferror(dest));
+        printError("failed to write to file %: %\n", destination, strerror(errno));
+        fclose(src);
+        fclose(dest);
+        free(buf);
+        return false;
+    }
+
+    fclose(src);
+    fclose(dest);
+    free(buf);
+    return true;
+
+    //error_code err;
+    //bool success = filesystem::copy_file(from, to, err);
+}
+
 bool _copy_gen(const string& name) {
+
     string from = "gen/" + name;
     string to = name;
+    bool success = copyWholeFile(from, to);
+    if (success) {
+        printDebug("cmd", "copy(%, %)\n", from, to);
+    } else {
+        printDebug("cmd", "failed copy(%, %)\n", from, to);
+    }
+    return success;
+
+    /*
     error_code err;
     bool success = filesystem::copy_file(from, to, err);
     if (success) {
@@ -229,6 +320,7 @@ bool _copy_gen(const string& name) {
         printDebug("cmd", "failed copy(%, %): %\n", from, to, err);
     }
     return success;
+    */
 }
 
 bool generateInc(const string& name) {
@@ -380,7 +472,8 @@ bool allDepsExist(Entry* e) {
     }
     ostringstream debug;
     if (yes.size() > 0) { debug << "yes = " << yes << " "; }
-    if (no.size() > 0) { debug << "no = " << no; }
+    if (no.size() > 0) { debug << "no = " << no << " "; }
+    if (yes.size() == 0 && no.size() == 0) { debug << "(none)"; }
     printDebug("allDepsExist", "%: %\n", e->name, debug.str());
     return no.size() == 0;
 #else
@@ -441,8 +534,27 @@ bool anyDepsNewer(Entry* e) {
 }
 
 bool shouldGenerate(Entry* e) {
+#ifdef DEBUG
+    ostringstream debug;
+    bool result;
+    if (e->exists) {
+        result = anyDepsNewer(e);
+        debug << boolalpha << result << " (already exists ";
+        if (result) debug << "but some deps are newer";
+        else debug << "and no deps are newer";
+        debug << ")";
+    } else {
+        result = allDepsExist(e);
+        debug << boolalpha << result << " (";
+        if (!result) { debug << "not "; }
+        debug << "all deps exist)";
+    }
+    printDebug("shouldGenerate", "%: %\n", e->name, debug.str());
+    return result;
+#else
     return ((!e->exists && allDepsExist(e))
         ||  ( e->exists && anyDepsNewer(e)));
+#endif
 }
 
 void _main(const string& target) {
