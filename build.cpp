@@ -100,10 +100,10 @@ time_t getFileModificationTime(const string& name) {
     return info.st_mtime;
 }
 
-bool generate_v2(Entry* e) {
+bool generate(Entry* e) {
     const Name name = e->name;
     bool success = false;
-    success = (*e->recipe)(name); // TODO? varargs, for exe dep objs
+    success = (*e->generationFunction)(name); // TODO? varargs, for exe dep objs
     if (success) {
         printDebug("gen","generated %\n", name);
         bool exists = fileExists(name);
@@ -191,7 +191,7 @@ void _findIncludes(const char* name, Set<char*>* incs) {
     }
 }
 
-Set<Name> determineDeps2(const Name& target) {
+Set<Name> determineDeps(const Name& target) {
     string base = getBase(target);
     Type type = getType(target);
     Set<Name> deps;
@@ -270,7 +270,6 @@ bool copyWholeFile(const string& source, const string& destination) {
 
     size_t numRead = fread(buf, 1, size, src);
     if (numRead != size) {
-        tprintf("numRead = %, size = %\n", numRead, size);
         assert(!feof(src));
         assert(ferror(src));
         printError("failed to read file %: %\n", source, strerror(errno));
@@ -367,7 +366,7 @@ bool generateExe(const string& name) { // FIXME doesn't mesh with typedef Genera
     return true;
 }
 
-GenerationFunction determineGenFn(Type type) {
+GenerationFunction determineGenerationFunction(Type type) {
     if (type == HDR) { return &generateInc; }
     if (type == SRC) { return &generateSrc; }
     if (type == OBJ) { return &generateObj; }
@@ -412,12 +411,10 @@ void addDependants(const string& name, const Set<Name>& rest) {
 }
 
 void updateDepsRecursive(Entry* e) {
-    Set<Name> deps = determineDeps2(e->name);
+    Set<Name> deps = determineDeps(e->name);
     addDependsOn(e->name, deps);
     Forc (it, deps) { addDependants(it, Set<string>{e->name}); }
-    Forc (it, deps) {
-        updateDepsRecursive(ALL[it]);
-    }
+    Forc (it, deps) { updateDepsRecursive(ALL[it]); }
 }
 
 void add(const string& name) {
@@ -428,10 +425,10 @@ void add(const string& name) {
     e->type = getType(name);
     e->exists = fileExists(name);
     e->generationResult = NONE;
-    e->recipe = determineGenFn(e->type);
+    e->generationFunction = determineGenerationFunction(e->type);
     e->timestamp = e->exists ? getFileModificationTime(e->name) : 0;
-    //e->dependsOn => {},
-    //e->dependants => {},
+    e->dependsOn = {};
+    e->dependants = {};
     ALL[name] = e;
     updateDepsRecursive(e);
 }
@@ -557,7 +554,7 @@ bool shouldGenerate(Entry* e) {
 #endif
 }
 
-void _main(const string& target) {
+void build(const string& target) {
         For (it, ALL) { delete it.second; }
         ALL.clear();
 
@@ -588,7 +585,7 @@ void _main(const string& target) {
                 For (it, ALL) {
                     Entry* e = it.second;
                     if (shouldGenerate(e)) {
-                        if (generate_v2(e)) {
+                        if (generate(e)) {
                             newlyGenerated.insert(e);
                         }
                     }
@@ -618,15 +615,31 @@ void _main(const string& target) {
                 Forc (it, ALL) {
                     if (it.second->type == HDR) {
                         Name name = it.first;
-                        name.replace(name.find_last_of(HDR_EXT), strlen(HDR_EXT), SRC_EXT); // XXX surely this will just work
+                        name.replace(name.rfind(HDR_EXT), strlen(HDR_EXT), SRC_EXT);
+#ifdef DEBUG
+                        bool known = ALL.end() != ALL.find(name);
+                        if (!known) {
+                            bool exists = fileExists(name);
+                            if (exists) {
+                                srcs.insert(name);
+                            } else {
+                                printDebug("ld", "% is not known, but does not exist\n", name);
+                            }
+                        } else {
+                            printDebug("ld", "% is already known\n", name);
+                        }
+#else
                         if (ALL.end() == ALL.find(name) && fileExists(name)) {
                             srcs.insert(name);
                         }
+#endif
                     }
                 }
                 if (srcs.size() > 0) {
+                    printDebug("ld", "adding % srcs: %\n", srcs.size(), srcs);
                     Forc (it, srcs) { add(it); }
                 } else {
+                    tprintf("no srcs for ld\n");
                     done2 = true;
                 }
     
@@ -654,7 +667,7 @@ int main(int argc, char** argv) {
 
     for (; i < argc; ++i) {
         try {
-            _main(argv[i]);
+            build(argv[i]);
         } catch (const exception& e) {
             printError("caught exception during % generation: %\n",
                     argv[i], e.what());

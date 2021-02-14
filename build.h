@@ -8,7 +8,9 @@
 
 using namespace std;
 
-// onlys work for C programs on Windows, sorry
+void build(const string& target);
+
+// only works for C programs on Windows, sorry
 const char* HDR_EXT = ".h";
 const char* OBJ_EXT = ".o";
 const char* SRC_EXT = ".c";
@@ -70,12 +72,12 @@ typedef bool(*GenerationFunction)(const string&);
 struct Entry {
     Name name;
     Type type;
-    Set<Entry*> dependsOn;
-    Set<Entry*> dependants;
     bool exists; // as a file on disk
     GenerationResult generationResult;
-    GenerationFunction recipe; // FIXME at least the vararg part
+    GenerationFunction generationFunction; // FIXME at least the vararg part
     time_t timestamp;
+    Set<Entry*> dependsOn;
+    Set<Entry*> dependants;
 };
 
 bool operator==(const Entry& lhs, const Entry& rhs);
@@ -86,8 +88,8 @@ string getBase(const string& name);
 Type getType(const string& name);
 bool debugEnabled(const char* category);
 time_t getFileModificationTime(const string& name);
-bool generate_v2(Entry* e);
-Set<Name> determineDeps2(const Name& target);
+bool generate(Entry* e);
+Set<Name> determineDeps(const Name& target);
 
 bool copyWholeFile(const string& source, const string& destination);
 
@@ -102,7 +104,7 @@ bool generateObj(const string& name);
 //bool generateExe(const string& name, const Set<Name>& objs) { // FIXME doesn't mesh with typedef GenerationFunction args
 bool generateExe(const string& name);
 
-GenerationFunction determineGenFn(Type type);
+GenerationFunction determineGenerationFunction(Type type);
 
 void addIfMissing(const string& name);
 
@@ -127,8 +129,6 @@ Set<Entry*> newerDeps(Entry* e);
 bool anyDepsNewer(Entry* e);
 
 bool shouldGenerate(Entry* e);
-
-void _main(const string& target);
 
 bool fileExists(const string& name);
 

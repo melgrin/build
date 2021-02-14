@@ -67,3 +67,7 @@ Moving to v12 to try to replace blah_v4.  I think that it is doing too much with
 
 ####
 2020-Oct-30 - I was somehow getting a hash into the keys of %ALL, so I got mad and ported the script to C++
+
+####
+2021-Feb-14 - In order to properly do exe deps, I think the program needs to understand what is possible to generate, not just what already exists.  The specific issue right now is that during the .h -> .c exe-only dep check, would-be-generated .c files don't exist after only building main.o.  This can be seen by running "make clean; build -d ld main.exe".  Basically need knowledge of whether a make-style recipe (generation function) exists.  Actually, right now, it always does.  So I guess for correctness I can confirm that Entry.generationFunction exists if the file doesn't, and add it to the ld srcs list.
+
