@@ -69,5 +69,14 @@ Moving to v12 to try to replace blah_v4.  I think that it is doing too much with
 2020-Oct-30 - I was somehow getting a hash into the keys of %ALL, so I got mad and ported the script to C++
 
 ####
-2021-Feb-14 - In order to properly do exe deps, I think the program needs to understand what is possible to generate, not just what already exists.  The specific issue right now is that during the .h -> .c exe-only dep check, would-be-generated .c files don't exist after only building main.o.  This can be seen by running "make clean; build -d ld main.exe".  Basically need knowledge of whether a make-style recipe (generation function) exists.  Actually, right now, it always does.  So I guess for correctness I can confirm that Entry.generationFunction exists if the file doesn't, and add it to the ld srcs list.
+2021-Feb-14
+In order to properly do exe deps, I think the program needs to understand what is possible to generate, not just what already exists.  The specific issue right now is that during the .h -> .c exe-only dep check, would-be-generated .c files don't exist after only building main.o.  This can be seen by running "make clean; build -d ld main.exe".  Basically need knowledge of whether a make-style recipe (generation function) exists.  Actually, right now, it always does.  So I guess for correctness I can confirm that Entry.generationFunction exists if the file doesn't, and add it to the ld srcs list.
+...
+I resolved issue described in previous paragraph.  Converting .h to .c, I check to see if the file pattern matches something that could be generated.  (Right now this is hardcoded to contain "Gen" in the name and a .h or .c file.  This needs to change to be more generic in the future, like recipe lookup in make.)  If it's something that could be generated, .c is converted to .o and added as a new "venture".  A venture is different than a normal dependency in that it is expected to fail sometimes, at which point it will be backed out and not visited again.  A .o venture will call for its .c equivalent to be generated (this is done via regular compile dependency logic).  If the .c generation fails, both the .c and the .o files are marked as having failed generation and are withdrawn from non-venture dependency lists (backs out the force-add of .o to .exe dependecies).
+> make clean; build -d cd,ld,venture,gen,genfail,cmd main.exe
+> make clean; build -d cd,ld,venture,gen,genfail,cmd other_main.exe
+Like I said earlier, detection of potentially generateable files is not flexible.  This should be updated, but will require some kind of more generic makefile-like syntax I think.
+I'm not sure generation time factors into this, but that should be tested (touch file, etc).
+Also should test partial regen (delete one file, rerun).
+build main.exe; build other_main.exe - other_main is not built. A second "build other_main.exe" gets a link error instead of just not attempting to compile - FIXME!
 

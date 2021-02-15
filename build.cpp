@@ -103,7 +103,7 @@ time_t getFileModificationTime(const string& name) {
 bool generate(Entry* e) {
     const Name name = e->name;
     bool success = false;
-    success = (*e->generationFunction)(name); // TODO? varargs, for exe dep objs
+    success = (*e->generationFunction)(name);
     if (success) {
         printDebug("gen","generated %\n", name);
         bool exists = fileExists(name);
@@ -222,84 +222,83 @@ bool copyWholeFile(const string& source, const string& destination) {
     
     errno = 0;
 
-    FILE* src = fopen(source.c_str(), "rb");
+    bool success = true;
+    FILE* src = 0;
+    FILE* dest = 0;
+    void* buf = 0;
+
+    src = fopen(source.c_str(), "rb");
     if (!src) {
-        printError("failed to open %: %\n", source, strerror(errno));
-        return false;
+        printDebug("copy","failed to open %: %\n", source, strerror(errno));
+        success = false;
+        goto end;
     }
 
     // This intentionally overwrites the old one if it exists.
     // Mainly this is to update the file time; filesystem::copy_file
     // was conveniently preserving the source's time, which defeats the
     // dependency age check.
-    FILE* dest = fopen(destination.c_str(), "wb");
+    dest = fopen(destination.c_str(), "wb");
     if (!dest) {
-        printError("failed to open %: %\n", destination, strerror(errno));
-        fclose(dest);
-        return false;
+        printDebug("copy","failed to open %: %\n", destination, strerror(errno));
+        success = false;
+        goto end;
     }
 
     if (fseek(src, 0, SEEK_END)) {
-        printError("% seek to end failed: %\n", source, strerror(errno));
-        fclose(src);
-        fclose(dest);
-        return false;
+        printDebug("copy","% seek to end failed: %\n", source, strerror(errno));
+        success = false;
+        goto end;
     }
     const long int size = ftell(src);
     if (-1 == size) {
-        printError("% ftell failed: %\n", source, strerror(errno));
-        fclose(src);
-        fclose(dest);
-        return false;
+        printDebug("copy","% ftell failed: %\n", source, strerror(errno));
+        success = false;
+        goto end;
     }
     if (fseek(src, 0, SEEK_SET)) {
-        printError("% seek to beginning failed: %\n", source, strerror(errno));
-        fclose(src);
-        fclose(dest);
-        return false;
+        printDebug("copy","% seek to beginning failed: %\n", source, strerror(errno));
+        success = false;
+        goto end;
     }
 
-    //char buf[size];
-    void* buf = malloc(size);
+    buf = malloc(size);
     if (buf == 0) {
-        printError("failed to allocate %-byte file copy buffer", size);
-        fclose(src);
-        fclose(dest);
-        return false;
+        printDebug("copy","failed to allocate %-byte file copy buffer", size);
+        success = false;
+        goto end;
     }
 
     size_t numRead = fread(buf, 1, size, src);
     if (numRead != size) {
         assert(!feof(src));
         assert(ferror(src));
-        printError("failed to read file %: %\n", source, strerror(errno));
-        fclose(src);
-        fclose(dest);
-        free(buf);
-        return false;
+        printDebug("copy","failed to read file %: %\n", source, strerror(errno));
+        success = false;
+        goto end;
     }
 
     size_t numWritten = fwrite(buf, 1, size, dest);
     if (numWritten != size) {
         assert(ferror(dest));
-        printError("failed to write to file %: %\n", destination, strerror(errno));
-        fclose(src);
-        fclose(dest);
-        free(buf);
-        return false;
+        printDebug("copy","failed to write to file %: %\n", destination, strerror(errno));
+        success = false;
+        goto end;
     }
 
-    fclose(src);
-    fclose(dest);
-    free(buf);
-    return true;
+    success = true;
+
+end:
+    if (src) fclose(src);
+    if (dest) fclose(dest);
+    if (buf) free(buf);
+    return success;
 
     //error_code err;
     //bool success = filesystem::copy_file(from, to, err);
 }
 
 bool _copy_gen(const string& name) {
-
     string from = "gen/" + name;
     string to = name;
     bool success = copyWholeFile(from, to);
@@ -309,17 +308,6 @@ bool _copy_gen(const string& name) {
         printDebug("cmd", "failed copy(%, %)\n", from, to);
     }
     return success;
-
-    /*
-    error_code err;
-    bool success = filesystem::copy_file(from, to, err);
-    if (success) {
-        printDebug("cmd", "copy(%, %)\n", from, to);
-    } else {
-        printDebug("cmd", "failed copy(%, %): %\n", from, to, err);
-    }
-    return success;
-    */
 }
 
 bool generateInc(const string& name) {
@@ -348,16 +336,11 @@ bool generateObj(const string& name) {
     return true;
 }
 
-bool generateExe(const string& name) { // FIXME doesn't mesh with typedef GenerationFunction args
-    Set<Name> objs;
-    Forc (it, ALL) {
-        if (it.second->type == OBJ) {
-            objs.insert(it.first);
-        }
-    }
+bool generateExe(const string& name) {
+    Entry* e = ALL[name]; // todo? avoid grabbing from global?
     ostringstream cmd;
     cmd << "link /nologo /OUT:" << name;
-    Forc (it, objs) { cmd << " " << it; }
+    Forc (it, e->dependsOn) { cmd << " " << it->name; }
     printDebug("cmd","%\n", cmd.str());
     if (system(cmd.str().c_str())) {
         printError("generateExe: command failed: '%'\n", cmd.str());
@@ -371,7 +354,7 @@ GenerationFunction determineGenerationFunction(Type type) {
     if (type == SRC) { return &generateSrc; }
     if (type == OBJ) { return &generateObj; }
     if (type == EXE) { return &generateExe; }
-    printError("Don't know how to generate files of type %", type);
+    printError("Don't know how to generate files of type %\n", type);
     exit(EXIT_FAILURE);
 }
 
@@ -383,13 +366,11 @@ void addIfMissing(const string& name) {
 }
 
 void _addDep(const string& name, Set<Entry*>& deps, const Set<Name>& rest, const char* debugRelation) {
-    addIfMissing(name);
     Set<Name> newlyAdded;
     Forc (it, rest) {
-        if (ALL.find(it) != ALL.end()) {
-            if (deps.insert(ALL[it]).second) {
-                newlyAdded.insert(it);
-            }
+        assert(ALL.find(it) != ALL.end());
+        if (deps.insert(ALL[it]).second) {
+            newlyAdded.insert(it);
         }
     }
     if (newlyAdded.size() > 0) {
@@ -427,6 +408,7 @@ void add(const string& name) {
     e->generationResult = NONE;
     e->generationFunction = determineGenerationFunction(e->type);
     e->timestamp = e->exists ? getFileModificationTime(e->name) : 0;
+    e->isVenture = false;
     e->dependsOn = {};
     e->dependants = {};
     ALL[name] = e;
@@ -450,10 +432,11 @@ ostream& dumpDeps(ostream& s) {
           << "\n\texists: " << boolalpha << e->exists
           << "\n\tdependsOn:";
         Forc (d, e->dependsOn) { s << " " << d->name; }
-        s << "\n\tdependants: ";
+        s << "\n\tdependants:";
         Forc (d, e->dependants) { s << " " << d->name; }
         s << "\n\tgenerationResult: " << e->generationResult
           << "\n\ttimestamp: " << ctime(&e->timestamp)
+          << "\tisVenture: " << boolalpha << e->isVenture
           << "\n";
     }
     return s;
@@ -464,12 +447,13 @@ bool allDepsExist(Entry* e) {
     Set<string> yes;
     Set<string> no;
     Forc (it, e->dependsOn) {
-        if (it->exists) { yes.insert(it->name); }
+        if (it->isVenture == true && it->generationResult == FAIL) { continue; }
+        else if (it->exists) { yes.insert(it->name); }
         else { no.insert(it->name); }
     }
     ostringstream debug;
-    if (yes.size() > 0) { debug << "yes = " << yes << " "; }
     if (no.size() > 0) { debug << "no = " << no << " "; }
+    if (yes.size() > 0) { debug << "yes = " << yes << " "; }
     if (yes.size() == 0 && no.size() == 0) { debug << "(none)"; }
     printDebug("allDepsExist", "%: %\n", e->name, debug.str());
     return no.size() == 0;
@@ -481,22 +465,6 @@ bool allDepsExist(Entry* e) {
 #endif
 
 }
-
-/*
-# needed for exe linking, because otherwise it only looks at .o files
-sub anyDepsNewerRecursive {
-    my $href = shift;
-    if (anyDepsNewer($href)) {
-        return 1;
-    }
-    for (values %{$href->{dependsOn}}) {
-        if (anyDepsNewerRecursive($_)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-*/
 
 Set<Entry*> newerDeps(Entry* e) {
     if (!e->exists) {
@@ -530,29 +498,73 @@ bool anyDepsNewer(Entry* e) {
     return newer.size() > 0;
 }
 
+void withdrawVenture(Entry* e) {
+    assert(e->generationResult == FAIL);
+    For (i, e->dependants) {
+        if (i->isVenture) {
+            printDebug("venture", "propagating failed venture % to dependant venture %\n", e->name, i->name);
+            i->generationResult = FAIL;
+            withdrawVenture(i);
+        } else {
+            printDebug("venture", "withdrawing % from % dependencies\n", e->name, i->name);
+            i->dependsOn.erase(e);
+        }
+    }
+}
+
 bool shouldGenerate(Entry* e) {
 #ifdef DEBUG
     ostringstream debug;
     bool result;
-    if (e->exists) {
+    if (e->generationResult == FAIL) {
+        result = false;
+        debug << "previously failed generation";
+    } else if (e->exists) {
         result = anyDepsNewer(e);
-        debug << boolalpha << result << " (already exists ";
+        debug << "already exists ";
         if (result) debug << "but some deps are newer";
         else debug << "and no deps are newer";
-        debug << ")";
     } else {
         result = allDepsExist(e);
-        debug << boolalpha << result << " (";
         if (!result) { debug << "not "; }
-        debug << "all deps exist)";
+        debug << "all deps exist";
     }
-    printDebug("shouldGenerate", "%: %\n", e->name, debug.str());
+    printDebug("shouldGenerate", "%: % (%)\n", e->name, result?"true":"false", debug.str());
     return result;
 #else
-    return ((!e->exists && allDepsExist(e))
-        ||  ( e->exists && anyDepsNewer(e)));
+    return e->generationResult != FAIL /* == NONE ?*/
+        && ((!e->exists && allDepsExist(e))
+        ||  (e->exists && anyDepsNewer(e)));
 #endif
 }
+
+bool hasGenerationFunction(const string& name) {
+    // XXX This is very incomplete.  Basically this should be similar to how 'make' looks up a recipe for a target, but I don't have anything like that yet.
+    //     So instead, it's hardcoded to be what I know are generateable files just based on my example.
+    bool result = (name.find("Gen") != string::npos
+    && (name.rfind(HDR_EXT) == name.length() - strlen(HDR_EXT)
+    ||  name.rfind(SRC_EXT) == name.length() - strlen(SRC_EXT)));
+    printDebug("hasGenFn", "%: %\n", name, result?"true":"false");
+    return result;
+}
+
+void replaceExt(string& s, const char* find, const char* replace) {
+    s.replace(s.rfind(find), strlen(find), replace);
+}
+
+Set<string> replaceExt(const Set<string>& in, const char* find, const char* replace) {
+    Set<string> out;
+    //todo - investigate auto&& vs modifying
+    For (i, in) {
+        string s(i);
+        replaceExt(s, find, replace);
+        out.insert(s);
+    }
+    return out;
+}
+//void replaceExt(string& s, const char* find, const char* replace) {
+//    s.replace(s.rfind(find), strlen(find), replace);
+//}
 
 void build(const string& target) {
         For (it, ALL) { delete it.second; }
@@ -563,22 +575,44 @@ void build(const string& target) {
         add(target);
 
         while (1) {
-    
+
             Forc (it, ALL) {
                 updateDepsRecursive(it.second);
             }
-    
+
             if (type0 == EXE) {
                 Set<string> allObjs;
                 Forc (it, ALL) {
                     if (it.second->type == OBJ) {
-                        allObjs.insert(it.first);
+                        // do not (re)add previously-failed ventures to exe deps
+                        if (it.second->isVenture) {
+                            if (it.second->generationResult != FAIL) {
+                                allObjs.insert(it.first);
+                            } else {
+                                printDebug("venture", "ignoring previously-failed venture %\n", it.first);
+                            }
+                        } else {
+                            allObjs.insert(it.first);
+                        }
                     }
                 }
+                // maybe there should be overloads of these that take Entry*?
+                // (to make it easier to propagate information like isVenture)
                 addDependsOn(target, allObjs);
                 Forc (it, allObjs) { addDependants(it, Set<string>{target}); }
+
+                Forc (i, allObjs) {
+                    Entry* o = ALL[i]; // why am I doing strings?
+                    if (o->isVenture) {
+                        For (j, o->dependsOn) {
+                            j->isVenture = true;
+                        }
+                    }
+                }
             }
-    
+
+            //// compile dependencies
+
             bool doneCD = false;
             {
                 Set<Entry*> newlyGenerated;
@@ -587,10 +621,12 @@ void build(const string& target) {
                     if (shouldGenerate(e)) {
                         if (generate(e)) {
                             newlyGenerated.insert(e);
+                        } else if (e->isVenture) {
+                            withdrawVenture(e);
                         }
                     }
                 }
-    
+
                 if (newlyGenerated.size() > 0) {
                     if (debugEnabled("cd")) {
                         Set<string> names;
@@ -607,48 +643,96 @@ void build(const string& target) {
                     doneCD = true;
                 }
             }
-    
-            bool done2 = false;
+
+            //// link dependencies
+
+            bool doneLD = false;
             if (type0 == EXE) {
                 
-                Set<Name> srcs;
+                Set<Name> existing;
+                Set<Name> ventures;
                 Forc (it, ALL) {
                     if (it.second->type == HDR) {
                         Name name = it.first;
-                        name.replace(name.rfind(HDR_EXT), strlen(HDR_EXT), SRC_EXT);
+                        //name.replace(name.rfind(HDR_EXT), strlen(HDR_EXT), SRC_EXT);
+                        replaceExt(name, HDR_EXT, SRC_EXT);
 #ifdef DEBUG
-                        bool known = ALL.end() != ALL.find(name);
+                        Map::iterator isrc = ALL.find(name);
+                        bool known = ALL.end() != isrc;
                         if (!known) {
                             bool exists = fileExists(name);
                             if (exists) {
-                                srcs.insert(name);
+                                printDebug("ld", "% is not known but already exists\n", name);
+                                existing.insert(name);
                             } else {
-                                printDebug("ld", "% is not known, but does not exist\n", name);
+                                if (hasGenerationFunction(name)) {
+                                    printDebug("ld", "% is not known and does not exist, but it has a generation function\n", name);
+                                    ventures.insert(name);
+                                } else {
+                                    printDebug("ld", "% is not known and does not exist and does not have a generation function\n", name);
+                                }
                             }
-                        } else {
-                            printDebug("ld", "% is already known\n", name);
+                        /*} else {
+                            Entry* e = isrc->second;
+                            if (!e->exists) {
+                                if (e->generationFunction) {
+                                    printDebug("ld", "% is known to not exist, but there's a generation function for it\n", name);
+                                    knownSrcs.insert(name);
+                                } else {
+                                    // Need to decide where to make this an error.  Either here or later when it tries to use the generation function.
+                                    printDebug("ld", "WARNING! want to add % because it's not known and doesn't exist, but there's no generation function for it.\n", name);
+                                }
+                            } else {
+                                printDebug("ld", "% is already known to exist\n", name);
+                            }
+                        */
                         }
 #else
+#error This no longer mirrors the debug version - need to add recipe/generationFunction detection.
                         if (ALL.end() == ALL.find(name) && fileExists(name)) {
                             srcs.insert(name);
                         }
 #endif
                     }
                 }
-                if (srcs.size() > 0) {
-                    printDebug("ld", "adding % srcs: %\n", srcs.size(), srcs);
-                    Forc (it, srcs) { add(it); }
-                } else {
-                    tprintf("no srcs for ld\n");
-                    done2 = true;
+                //if (knownSrcs.size() > 0) { printDebug("ld","!!!!!! known srcs = %\n", knownSrcs); }
+                if (existing.size() > 0) {
+                    Set<string> objs = replaceExt(existing, SRC_EXT, OBJ_EXT);
+                    printDebug("ld", "adding % objs that have existing srcs: %\n", objs.size(), objs);
+                    Forc (it, objs) { add(it); }
                 }
-    
+                if (ventures.size() > 0) {
+                    Set<string> objs = replaceExt(ventures, SRC_EXT, OBJ_EXT);
+                    printDebug("venture", "adding % venture%: %\n", objs.size(), objs.size()==1?"":"s", objs);
+                    Forc (it, objs) { add(it); }
+                    Forc (it, objs) { ALL[it]->isVenture = true; }
+                    /*
+                    Set<string> objs;
+                    Forc (it, srcs) {
+                        string obj = it;
+                        obj.replace(obj.rfind(SRC_EXT), strlen(SRC_EXT), OBJ_EXT);
+                        objs.insert(obj);
+                    }
+                    printDebug("venture", "adding % ventures: %\n", objs.size(), objs);
+                    Forc (it, objs) {
+                        add(it);
+                        ALL[it]->isVenture = true;
+                    }
+                    */
+                }
+                if (existing.size() == 0 && ventures.size() == 0) {
+                    printDebug("ld", "done\n");
+                    doneLD = true;
+                }
+
             } else {
-                done2 = true;
+                doneLD = true;
             }
-    
-            if (doneCD && done2) { break; }
+
+            if (doneCD && doneLD) { break; }
         }
+
+        if (debugEnabled("dump")) dumpDeps(cout);
 }
 
 int main(int argc, char** argv) {
@@ -676,6 +760,31 @@ int main(int argc, char** argv) {
     return 0;
 }
 
+ostream& operator<<(ostream& os, Type x) {
+    switch (x) {
+        case HDR: os << "HDR"; break;
+        case SRC: os << "SRC"; break;
+        case OBJ: os << "OBJ"; break;
+        case EXE: os << "EXE"; break;
+        default:
+            os << "(unknown Type " << static_cast<int>(x) << ")";
+            break;
+    }
+    return os;
+}
+
+ostream& operator<<(ostream& os, GenerationResult x) {
+    switch (x) {
+        case NONE: os << "NONE"; break;
+        case FAIL: os << "FAIL"; break;
+        case SUCCESS: os << "SUCCESS"; break;
+        default:
+            os << "(unknown GenerationResult " << static_cast<int>(x) << ")";
+            break;
+    }
+    return os;
+}
+
 /*
 sub newerDepsRecursive {
     my $href = shift;
@@ -684,6 +793,22 @@ sub newerDepsRecursive {
         push @newer, newerDepsRecursive($_);
     }
     return @newer;
+}
+*/
+
+/*
+# needed for exe linking, because otherwise it only looks at .o files
+sub anyDepsNewerRecursive {
+    my $href = shift;
+    if (anyDepsNewer($href)) {
+        return 1;
+    }
+    for (values %{$href->{dependsOn}}) {
+        if (anyDepsNewerRecursive($_)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 */
 

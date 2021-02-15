@@ -22,6 +22,9 @@ const char* EXE_EXT = ".exe";
 
 #define Forc(IT, X) for (const auto& IT : X)
 #define For(IT, X) for (auto&& IT : X)
+//todo - investigate auto&& vs modifying
+//#define Forc(IT, X) for (auto IT = cbegin(X); IT != cend(X); ++IT)
+//#define For(IT, X) for (auto IT = begin(X); IT != end(X); ++IT)
 
 template <typename T>
 ostream& operator<<(ostream& os, const Set<T>& x) {
@@ -76,11 +79,12 @@ struct Entry {
     GenerationResult generationResult;
     GenerationFunction generationFunction; // FIXME at least the vararg part
     time_t timestamp;
+    bool isVenture;
     Set<Entry*> dependsOn;
     Set<Entry*> dependants;
 };
 
-bool operator==(const Entry& lhs, const Entry& rhs);
+//bool operator==(const Entry& lhs, const Entry& rhs);
 
 typedef unordered_map<Name, Entry*> Map;
 
@@ -100,8 +104,6 @@ bool _copy_gen(const string& name);
 bool generateInc(const string& name);
 bool generateSrc(const string& name);
 bool generateObj(const string& name);
-
-//bool generateExe(const string& name, const Set<Name>& objs) { // FIXME doesn't mesh with typedef GenerationFunction args
 bool generateExe(const string& name);
 
 GenerationFunction determineGenerationFunction(Type type);
@@ -128,6 +130,8 @@ Set<Entry*> newerDeps(Entry* e);
 
 bool anyDepsNewer(Entry* e);
 
+void withdrawVenture(Entry* e);
+
 bool shouldGenerate(Entry* e);
 
 bool fileExists(const string& name);
@@ -135,5 +139,13 @@ bool fileExists(const string& name);
 // Everything in the Set<char*> is allocated on the heap!
 Set<char*> findIncludes(const string& name);
 void _findIncludes(const char* name, Set<char*>* incs);
+
+bool hasGenerationFunction(const string& name);
+
+void replaceExt(string& s, const char* find, const char* replace);
+Set<string> replaceExt(const Set<string>& in, const char* find, const char* replace);
+
+ostream& operator<<(ostream& os, Type x);
+ostream& operator<<(ostream& os, GenerationResult x);
 
 #endif // build_h
