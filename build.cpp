@@ -305,7 +305,13 @@ bool _copy_gen(const string& name) {
     if (success) {
         printDebug("cmd", "copy(%, %)\n", from, to);
     } else {
-        printDebug("cmd", "failed copy(%, %)\n", from, to);
+        if (debugEnabled("cmd")) {
+            Map::const_iterator i = ALL.find(name);
+            // ventures are expected to fail sometimes
+            if (i != ALL.end() && !i->second->isVenture) {
+                printDebug("cmd", "failed copy(%, %)\n", from, to);
+            }
+        }
     }
     return success;
 }
@@ -616,6 +622,7 @@ void build(const string& target) {
             bool doneCD = false;
             {
                 Set<Entry*> newlyGenerated;
+                bool withdrewAnyVentures = false;
                 For (it, ALL) {
                     Entry* e = it.second;
                     if (shouldGenerate(e)) {
@@ -623,6 +630,8 @@ void build(const string& target) {
                             newlyGenerated.insert(e);
                         } else if (e->isVenture) {
                             withdrawVenture(e);
+                            // need to loop back and retry now that generation won't be denied due to dependencies that didn't exist that were just withdrawn
+                            withdrewAnyVentures = true;
                         }
                     }
                 }
@@ -638,8 +647,8 @@ void build(const string& target) {
                             updateDepsRecursive(j);
                         }
                     }
-                } else {
-                    printDebug("cd", "no new targets generated\n");
+                } else if (!withdrewAnyVentures) {
+                    printDebug("cd", "no new targets generated, no ventures withdrawn\n");
                     doneCD = true;
                 }
             }
