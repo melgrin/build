@@ -518,6 +518,13 @@ void withdrawVenture(Entry* e) {
     }
 }
 
+bool allDepVenturesResolved(Entry* e) {
+    Forc (it, e->dependsOn) {
+        if (it->isVenture && it->generationResult == NONE) return false;
+    }
+    return true;
+}
+
 bool shouldGenerate(Entry* e) {
 #ifdef DEBUG
     ostringstream debug;
@@ -526,12 +533,15 @@ bool shouldGenerate(Entry* e) {
         result = false;
         debug << "previously failed generation";
     } else if (e->exists) {
-        result = anyDepsNewer(e);
-        debug << "already exists ";
-        if (result) debug << "but some deps are newer";
-        else debug << "and no deps are newer";
+        bool depsNewer = anyDepsNewer(e);
+        bool venturesResolved = allDepVenturesResolved(e);
+        debug << "already exists"
+              << ", anyDepsNewer = " << (depsNewer?"true":"false")
+              << ", allDepVenturesResolved = " << (venturesResolved?"true":"false");
+        result = depsNewer && venturesResolved;
     } else {
         result = allDepsExist(e);
+        debug << "doesn't exist, ";
         if (!result) { debug << "not "; }
         debug << "all deps exist";
     }
@@ -539,8 +549,8 @@ bool shouldGenerate(Entry* e) {
     return result;
 #else
     return e->generationResult != FAIL /* == NONE ?*/
-        && ((!e->exists && allDepsExist(e))
-        ||  (e->exists && anyDepsNewer(e)));
+        && ((e->exists && anyDepsNewer(e) && allDepVenturesResolved(e)
+        ||  (!e->exists && allDepsExist(e))));
 #endif
 }
 

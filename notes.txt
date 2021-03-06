@@ -78,5 +78,4 @@ I resolved issue described in previous paragraph.  Converting .h to .c, I check 
 Like I said earlier, detection of potentially generateable files is not flexible.  This should be updated, but will require some kind of more generic makefile-like syntax I think.
 I'm not sure generation time factors into this, but that should be tested (touch file, etc).
 Also should test partial regen (delete one file, rerun).
-build main.exe; build other_main.exe - other_main is not built. A second "build other_main.exe" gets a link error instead of just not attempting to compile - FIXME!
 

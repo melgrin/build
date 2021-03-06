@@ -132,6 +132,8 @@ bool anyDepsNewer(Entry* e);
 
 void withdrawVenture(Entry* e);
 
+bool allDepVenturesResolved(Entry* e);
+
 bool shouldGenerate(Entry* e);
 
 bool fileExists(const string& name);
