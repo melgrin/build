@@ -91,7 +91,6 @@ time_t getFileModificationTime(const string& name) {
     return t;
     */
     
-//#ifdef (_WIN32)
     struct stat info;
     if (stat(name.c_str(), &info) != 0) {
         printError("%: %\n", name, strerror(errno));
@@ -141,6 +140,9 @@ void _findIncludes(const char* name, Set<char*>* incs) {
 
         // can't do this without extra logic for handling failure to get library headers, like stdio.h
         //regex pattern("#\\s*include\\s+[<\"](.+)[>\"]\\s*\n");
+
+        // at least for now, assume that files we want to look at are double-quoted,
+        // and files we don't want to look at are angle-bracketed
         regex pattern("#\\s*include\\s+\"(.+)\"\\s*\n");
 
         char buf[128];
@@ -150,15 +152,18 @@ void _findIncludes(const char* name, Set<char*>* incs) {
             if (ferror(fp)) {
                 printError("fgets failed");
             } else {
-                smatch match;
-                string tmp(buf); // XXX there's a CharT* overload for regex_match according to tbe documentation, but it doesn't compile (?)
+                match_results<const char*> matches;
                 //printDebug("findIncsLine", "%", buf);
-                if (regex_match(tmp, match, pattern)) {
+                if (regex_match(buf, matches, pattern)) {
                     //printDebug("findIncsMatch", "% includes %\n", name, match[1]);
-                    strncpy(buf, match[1].str().c_str(), sizeof(buf)); // some const& compiler errors I don't understsand is going on with this, so just copy out
+                    // there are no match_results/regex_match overloads that allow non-const,
+                    // and apparently unordered_set::find can't handle const char* when it contains just char*
+                    // and char* match = const_cast<char*>(matches[1].str().c_str()) was returning an empty string
+                    // so just copy it back out into buf so it's actually usable
+                    strncpy(buf, matches[1].str().c_str(), sizeof(buf)); 
                     if (local.find(buf) == local.end()) {
                         size_t n = strlen(buf) + 1; // + 1 for null
-                        char* s = (char*) malloc(n); // XXX leak
+                        char* s = (char*) malloc(n); // leak
                         memcpy(s, buf, n);
                         bool added = local.insert(s).second;
                         assert(added);
@@ -168,19 +173,6 @@ void _findIncludes(const char* name, Set<char*>* incs) {
         }
 
         fclose(fp);
-
-        /*
-        string line;
-        const size_t len = 128;
-        char debug[len];
-        while (getline(in, line)) {
-            strncpy(debug, line.c_str(), len);
-            debug[len-1] = '\0';
-            if (regex_match(line, match, pattern)) {
-                local.insert(match[1]);
-            }
-        }
-        */
     }
     printDebug("findIncludes", "% += %\n", name, local);
     For (it, local) {
@@ -673,9 +665,7 @@ void build(const string& target) {
                 Forc (it, ALL) {
                     if (it.second->type == HDR) {
                         Name name = it.first;
-                        //name.replace(name.rfind(HDR_EXT), strlen(HDR_EXT), SRC_EXT);
                         replaceExt(name, HDR_EXT, SRC_EXT);
-#ifdef DEBUG
                         Map::iterator isrc = ALL.find(name);
                         bool known = ALL.end() != isrc;
                         if (!known) {
@@ -691,30 +681,10 @@ void build(const string& target) {
                                     printDebug("ld", "% is not known and does not exist and does not have a generation function\n", name);
                                 }
                             }
-                        /*} else {
-                            Entry* e = isrc->second;
-                            if (!e->exists) {
-                                if (e->generationFunction) {
-                                    printDebug("ld", "% is known to not exist, but there's a generation function for it\n", name);
-                                    knownSrcs.insert(name);
-                                } else {
-                                    // Need to decide where to make this an error.  Either here or later when it tries to use the generation function.
-                                    printDebug("ld", "WARNING! want to add % because it's not known and doesn't exist, but there's no generation function for it.\n", name);
-                                }
-                            } else {
-                                printDebug("ld", "% is already known to exist\n", name);
-                            }
-                        */
                         }
-#else
-#error This no longer mirrors the debug version - need to add recipe/generationFunction detection.
-                        if (ALL.end() == ALL.find(name) && fileExists(name)) {
-                            srcs.insert(name);
-                        }
-#endif
                     }
                 }
-                //if (knownSrcs.size() > 0) { printDebug("ld","!!!!!! known srcs = %\n", knownSrcs); }
+
                 if (existing.size() > 0) {
                     Set<string> objs = replaceExt(existing, SRC_EXT, OBJ_EXT);
                     printDebug("ld", "adding % objs that have existing srcs: %\n", objs.size(), objs);
@@ -725,19 +695,6 @@ void build(const string& target) {
                     printDebug("venture", "adding % venture%: %\n", objs.size(), objs.size()==1?"":"s", objs);
                     Forc (it, objs) { add(it); }
                     Forc (it, objs) { ALL[it]->isVenture = true; }
-                    /*
-                    Set<string> objs;
-                    Forc (it, srcs) {
-                        string obj = it;
-                        obj.replace(obj.rfind(SRC_EXT), strlen(SRC_EXT), OBJ_EXT);
-                        objs.insert(obj);
-                    }
-                    printDebug("venture", "adding % ventures: %\n", objs.size(), objs);
-                    Forc (it, objs) {
-                        add(it);
-                        ALL[it]->isVenture = true;
-                    }
-                    */
                 }
                 if (existing.size() == 0 && ventures.size() == 0) {
                     printDebug("ld", "done\n");
