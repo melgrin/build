@@ -5,8 +5,13 @@
 #include <filesystem>
 #include <fstream>
 #include <sys/stat.h>
+#if _WIN32
+#include <windows.h>
+#endif
 
 using namespace std;
+static Build::Map ALL;
+static int ITERATION;
 
 static void split(vector<string>& out, const string& s, char delimiter) {
     size_t last = 0;
@@ -30,8 +35,9 @@ string getBase(const string& name) {
 }
 
 bool DEBUG_CATEGORIES_ALL_ENABLED;
-Set<string> DEBUG_CATEGORIES_ENABLED;
-Set<string> DEBUG_CATEGORIES_DISABLED;
+bool DEBUG_CATEGORIES_ALL_DISABLED;
+set<string> DEBUG_CATEGORIES_ENABLED;
+set<string> DEBUG_CATEGORIES_DISABLED;
 
 void loadDebug(const char* arg) {
     //tprintf("loadDebug: %\n", arg);
@@ -40,7 +46,11 @@ void loadDebug(const char* arg) {
     split(pieces, arg, ',');
     forc (it, pieces) {
         if (it[0] == '-') {
-            DEBUG_CATEGORIES_DISABLED.insert(it.substr(1));
+            if (strcmp(it.c_str(), "all") == 0) {
+                DEBUG_CATEGORIES_ALL_DISABLED = true;
+            } else {
+                DEBUG_CATEGORIES_DISABLED.insert(it.substr(1));
+            }
         } else if (strcmp(it.c_str(), "all") == 0) {
             DEBUG_CATEGORIES_ALL_ENABLED = true;
         } else {
@@ -60,10 +70,18 @@ bool debugEnabled(const char* category) {
     bool enabled = false;
 #ifdef DEBUG
     bool _enabled = DEBUG_CATEGORIES_ALL_ENABLED || (DEBUG_CATEGORIES_ENABLED.find(category) != DEBUG_CATEGORIES_ENABLED.end());
-    bool _disabled = (DEBUG_CATEGORIES_DISABLED.find(category) != DEBUG_CATEGORIES_DISABLED.end());
+    bool _disabled = DEBUG_CATEGORIES_ALL_DISABLED || (DEBUG_CATEGORIES_DISABLED.find(category) != DEBUG_CATEGORIES_DISABLED.end());
     enabled = _enabled && !_disabled;
 #endif
     return enabled;
+}
+
+void debugEnableAll(bool val) {
+    DEBUG_CATEGORIES_ALL_ENABLED = val;
+}
+
+void debugDisableAll(bool val) {
+    DEBUG_CATEGORIES_ALL_DISABLED = val;
 }
 
 time_t getFileModificationTime(const string& name) {
@@ -101,17 +119,28 @@ bool generate(Entry* e) {
 
 bool fileExists(const string& name) {
     return filesystem::is_regular_file(name);
+    /* alternative, if std::filesystem is unavailable
+    struct stat info;
+    int result = stat(name.c_str(), &info);
+    return result == 0; // maybe want errno != ENOENT (No such file or directory)
+    */
 }
 
-void addIfMissing(const string& name) {
-    if (ALL.find(name) == ALL.end()) {
-        printDebug("addIfMissing", "%\n", name);
-        add(name);
+Entry* addIfMissing(const string& name) {
+    Entry* e;
+    Map::iterator i = ALL.find(name);
+    if (i == ALL.end()) {
+        printDebug("addIfMissing", "% added\n", name);
+        e = add(name);
+    } else {
+        printDebug("addIfMissing", "% already present\n", name);
+        e = i->second;
     }
+    return e;
 }
 
-void _addDep(const string& name, Set<Entry*>& deps, const Set<Name>& rest, const char* debugRelation) {
-    Set<Name> newlyAdded;
+void _addDep(const string& name, set<Entry*>& deps, const set<Name>& rest, const char* debugRelation) {
+    set<Name> newlyAdded;
     forc (it, rest) {
         assert(ALL.find(it) != ALL.end());
         if (deps.insert(ALL[it]).second) {
@@ -124,28 +153,30 @@ void _addDep(const string& name, Set<Entry*>& deps, const Set<Name>& rest, const
     //return newlyAdded.size();
 }
 
-void addDependsOn(const string& name, const Set<Name>& rest) {
+void addDependsOn(const string& name, const set<Name>& rest) {
     addIfMissing(name);
     forc (it, rest) { addIfMissing(it); }
     _addDep(name, ALL[name]->dependsOn, rest, "dependsOn");
 }
 
-void addDependants(const string& name, const Set<Name>& rest) {
+void addDependants(const string& name, const set<Name>& rest) {
     addIfMissing(name);
     forc (it, rest) { addIfMissing(it); }
     _addDep(name, ALL[name]->dependants, rest, "dependants");
 }
 
 void updateDepsRecursive(Entry* e) {
-    Set<string> deps = (*e->dependencyFunction)(e->name);
+    set<string> deps = (*e->dependencyFunction)(e->name);
     addDependsOn(e->name, deps);
-    forc (it, deps) { addDependants(it, Set<string>{e->name}); }
+    forc (it, deps) { addDependants(it, set<string>{e->name}); }
     forc (it, deps) { updateDepsRecursive(ALL[it]); }
 }
 
-void add(const string& name) {
-    assert(ALL.find(name) == ALL.end());
-    //printDebug("add", "%\n", name);
+Entry* add(const string& name) {
+    if (ALL.find(name) != ALL.end()) {
+        printError("tried to add duplicate - %", name);
+        exit(EXIT_FAILURE);
+    }
     Entry* e = new Entry;
     e->name = name;
     e->exists = fileExists(name);
@@ -156,10 +187,29 @@ void add(const string& name) {
     e->isVenture = false;
     e->dependsOn = {};
     e->dependants = {};
+    strncpy(e->cname, name.c_str(), sizeof e->cname); // because I can't figure out where in the depths of std::basic_string the actual data is
     assert(e->generationFunction != 0);
     assert(e->dependencyFunction != 0);
     ALL[name] = e;
+    printDebug("add", "%\n", name);
     updateDepsRecursive(e);
+    return e;
+}
+
+Entry* get(const std::string& name) {
+    Map::iterator it = ALL.find(name);
+    Entry* e;
+    if (it == ALL.end()) { e = 0; }
+    else { e = it->second; }
+    return e;
+}
+
+Map const& getAll() {
+    return ALL;
+}
+
+int getIteration() {
+    return ITERATION;
 }
 
 //string toString(time_t t) {
@@ -192,8 +242,8 @@ ostream& dumpDeps(ostream& s) {
 bool allDepsExist(Entry* e) {
 
 #ifdef DEBUG
-    Set<string> yes;
-    Set<string> no;
+    set<string> yes;
+    set<string> no;
     forc (it, e->dependsOn) {
         if (it->isVenture == true && it->generationResult == GEN_FAIL) { continue; }
         else if (it->exists) { yes.insert(it->name); }
@@ -214,13 +264,13 @@ bool allDepsExist(Entry* e) {
     return true;
 }
 
-Set<Entry*> newerDeps(Entry* e) {
+set<Entry*> newerDeps(Entry* e) {
     if (!e->exists) {
         printError("Unable to determine if % is newer than its dependencies because it does not exist.", e->name);
         exit(EXIT_FAILURE);
     }
 
-    Set<Entry*> newer;
+    set<Entry*> newer;
     forc (it, e->dependsOn) {
         if (it->exists) {
             if (it->timestamp > e->timestamp) {
@@ -231,7 +281,7 @@ Set<Entry*> newerDeps(Entry* e) {
 
 #ifdef DEBUG
     if (newer.size() > 0) {
-        Set<string> names;
+        set<string> names;
         forc (it, newer) { names.insert(it->name); }
         printDebug("newer", "% %/% deps are newer: %\n",
                 e->name, newer.size(), e->dependsOn.size(), names);
@@ -242,7 +292,7 @@ Set<Entry*> newerDeps(Entry* e) {
 }
 
 bool anyDepsNewer(Entry* e) {
-    Set<Entry*> newer = newerDeps(e);
+    set<Entry*> newer = newerDeps(e);
     return newer.size() > 0;
 }
 
@@ -270,6 +320,7 @@ bool allDepVenturesResolved(Entry* e) {
 bool shouldGenerate(Entry* e) {
 
 #ifdef DEBUG
+    debugDisableAll(true);
     ostringstream debug;
     if (e->generationResult == GEN_FAIL) {
         debug << "previously failed generation";
@@ -284,6 +335,7 @@ bool shouldGenerate(Entry* e) {
         if (!allDepsExist(e)) { debug << "not "; }
         debug << "all deps exist";
     }
+    debugDisableAll(false);
 #endif
 
     bool result = e->generationResult != GEN_FAIL /* == NONE ?*/
@@ -293,16 +345,56 @@ bool shouldGenerate(Entry* e) {
     return result;
 }
 
+#ifdef DEBUG
+char* debugTimestamp() { // This is not thread safe because it uses a static char buffer
+    // 11:22:33.123456
+    static const size_t N = 16;
+    static char buf[N];
+    char* result = "";
+#if _WIN32
+    SYSTEMTIME st;
+    GetSystemTime(&st);
+    snprintf(buf, N, "%02d:%02d:%02d.%03d", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    result = buf;
+#else
+    struct timeval tv;
+    if (0 == gettimeofday(&tv, 0)) {
+        const tm* timestruct = localtime(&tv.tv_sec);
+        char* p = buf;
+        //size_t n = strftime(p, N, "%F %H:%M:%S", timestruct); // 2022-04-27 18:13:32
+        size_t n = strftime(p, N, "%H:%M:%S", timestruct);
+        if (n != 0 && n < N) {
+            p += n;
+            snprintf(p, N - n, ".%06u", tv.tv_usec);
+            buf[N-1] = 0;
+            //printf("%s\n", buf);
+        }
+        result = buf;
+    }
+#endif
+    return result;
+}
+#endif
+
 void run(const string& target, UserCode* userCode) {
+
+    printDebug("run", "running build for target %\n", target);
+
     USER_CODE = userCode;
     assert(USER_CODE != 0);
 
     fora (it, ALL) { delete it.second; }
     ALL.clear();
+    ITERATION = 0;
 
     add(target);
 
     while (1) {
+
+        ++ITERATION;
+        printDebug("iteration", "starting iteration %\n", ITERATION);
+
+        size_t total = ALL.size();
 
         forc (it, ALL) {
             updateDepsRecursive(it.second);
@@ -310,8 +402,8 @@ void run(const string& target, UserCode* userCode) {
 
         bool done = false;
         {
-            Set<Entry*> newlyGenerated;
-            bool withdrewAnyVentures = false;
+            set<Entry*> newlyGenerated;
+            size_t numVenturesWithdrawn = 0;
             fora (it, ALL) {
                 Entry* e = it.second;
                 if (shouldGenerate(e)) {
@@ -320,25 +412,34 @@ void run(const string& target, UserCode* userCode) {
                     } else if (e->isVenture) {
                         withdrawVenture(e);
                         // need to loop back and retry now that generation won't be denied due to dependencies that didn't exist that were just withdrawn
-                        withdrewAnyVentures = true;
+                        ++numVenturesWithdrawn;
                     }
                 }
             }
 
-            if (newlyGenerated.size() > 0) {
+            size_t numGenerated = newlyGenerated.size();
+
+            if (numGenerated > 0) {
                 if (debugEnabled("run")) {
-                    Set<string> names;
+                    set<string> names;
                     forc (i, newlyGenerated) { names.insert(i->name); }
-                    printDebug("run", "generated % new target%: %\n", newlyGenerated.size(), newlyGenerated.size()==1?"":"s", names);
+                    printDebug("run", "generated % new target%: %\n", numGenerated, numGenerated==1?"":"s", names);
                 }
                 forc (i, newlyGenerated) {
                     forc (j, i->dependants) {
                         updateDepsRecursive(j);
                     }
                 }
-            } else if (!withdrewAnyVentures) {
-                printDebug("run", "no new targets generated, no ventures withdrawn\n");
+            }
+
+            assert(total <= ALL.size()); // nothing should ever be removed from ALL, until next 'run'
+            size_t numAdded = ALL.size() - total;
+
+            printDebug("run", "iteration %: % generated, % discovered, % ventures withdrawn\n", ITERATION, numGenerated, numAdded, numVenturesWithdrawn);
+
+            if (numGenerated == 0 /*&& numAdded == 0*/ && numVenturesWithdrawn == 0) {
                 done = true;
+                printDebug("run", "done after % iteration%, total target count = %\n", ITERATION, ITERATION==1?"":"s", ALL.size());
             }
         }
 

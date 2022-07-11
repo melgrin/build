@@ -4,18 +4,16 @@
 
 //#include <windows.h> // OutputDebugStringA
 #include <string>
-#include <unordered_set>
+#include <set>
 #include <unordered_map>
 #include <iostream>
-
-#define Set std::unordered_set
 
 namespace Build {
 
     typedef std::string Name;
 
     typedef bool(*GenerationFunction)(const Name&);
-    typedef Set<std::string>(*DependencyFunction)(const Name&);
+    typedef std::set<std::string>(*DependencyFunction)(const Name&);
 
     enum GenerationResult {
         GEN_NONE    = -1, // haven't tried to generate the file yet
@@ -26,14 +24,15 @@ namespace Build {
     // The main data for Build.  There is one Entry created to track each file involved in the build process.
     struct Entry {
         Name name;
+        char cname[32];
         bool exists; // as a file on disk
         GenerationResult generationResult;
         GenerationFunction generationFunction; // FIXME at least the vararg part
         DependencyFunction dependencyFunction;
         time_t timestamp;
         bool isVenture;
-        Set<Entry*> dependsOn;
-        Set<Entry*> dependants;
+        std::set<Entry*> dependsOn;
+        std::set<Entry*> dependants;
     };
 
     struct UserCode {
@@ -44,37 +43,42 @@ namespace Build {
         GetDependencyFunctionFunction getDependencyFunction;
     };
 
-    void loadDebug(const char* arg, UserCode* userCode);
+    void loadDebug(const char* arg);
+    bool debugEnabled(const char* category);
+    void debugEnableAll(bool val);
+    void debugDisableAll(bool val);
 
     // Main build loop.  Tries to generate target based on dependency rules and generation functions provided by user.
-    void run(const std::string& target);
+    void run(const std::string& target, UserCode* userCode);
 
-    // This is filename to struct mapping of all of the files that Build has encountered during run.  There is one Entry per file.  A file can be an existing file, a file that Build knows it needs to generate, or a file that Build might need to generate (a venture).
-    // It is cleared before each run.
+    // This is filename to struct mapping of all of the files that Build has encountered during 'run'.  There is one Entry per file.  A file can be an existing file, a file that Build knows it needs to generate, or a file that Build might need to generate (a venture).
+    // It is cleared at the beginning of 'run'.
     typedef std::unordered_map<Name, Entry*> Map;
-    Map ALL; 
 
 
 
     std::string getBase(const Name& name);
-    bool debugEnabled(const char* category);
     time_t getFileModificationTime(const std::string& name);
     bool generate(Entry* e);
-    Set<Name> determineDeps(const Name& target);
+    std::set<Name> determineDeps(const Name& target);
 
 
 
-    void addIfMissing(const std::string& name);
+    Entry* addIfMissing(const std::string& name);
 
-    void _addDep(const std::string& name, Set<Entry*>& deps, const Set<Name>& rest, const char* debugRelation = "");
+    void _addDep(const std::string& name, std::set<Entry*>& deps, const std::set<Name>& rest, const char* debugRelation = "");
 
-    void addDependsOn(const std::string& name, const Set<Name>& rest);
+    void addDependsOn(const std::string& name, const std::set<Name>& rest);
 
-    void addDependants(const std::string& name, const Set<Name>& rest);
+    void addDependants(const std::string& name, const std::set<Name>& rest);
 
     void updateDepsRecursive(Entry* e);
 
-    void add(const std::string& name);
+    Entry* add(const std::string& name);
+
+    Entry* get(const std::string& name);
+    Map const& getAll();
+    int getIteration();
 
     //std::string toString(time_t t);
 
@@ -82,7 +86,7 @@ namespace Build {
 
     bool allDepsExist(Entry* e);
 
-    Set<Entry*> newerDeps(Entry* e);
+    std::set<Entry*> newerDeps(Entry* e);
 
     bool anyDepsNewer(Entry* e);
 
@@ -94,14 +98,11 @@ namespace Build {
 
     bool fileExists(const std::string& name);
 
-    // Everything in the Set<char*> is allocated on the heap!
-    //Set<char*> findIncludes(const std::string& name);
-    //void _findIncludes(const char* name, Set<char*>* incs);
-
     bool hasGenerationFunction(const std::string& name);
 
-    void replaceExt(std::string& s, const char* find, const char* replace);
-    Set<std::string> replaceExt(const Set<std::string>& in, const char* find, const char* replace);
+#ifdef DEBUG
+    char* debugTimestamp();
+#endif
 
 }
 
@@ -115,7 +116,7 @@ std::ostream& operator<<(std::ostream& os, Build::GenerationResult x);
 
 
 template <typename T>
-std::ostream& operator<<(std::ostream& os, const Set<T>& x) {
+std::ostream& operator<<(std::ostream& os, const std::set<T>& x) {
     os << "{";
     forc (it, x) { os << " " << it; }
     os << " }";
@@ -125,7 +126,7 @@ std::ostream& operator<<(std::ostream& os, const Set<T>& x) {
 void tprintf(const char* format) {
     std::cout << format;
 }
- 
+
 template<typename T, typename... Targs>
 void tprintf(const char* format, T value, Targs... Fargs) {
     for (; *format != '\0'; format++) {
@@ -154,8 +155,11 @@ void tprintf(const char* format, T value, Targs... Fargs) {
 
 #define printDebug(CATEGORY, FMT, ...) do { \
     if (Build::debugEnabled(CATEGORY)) { \
-        tprintf("[" CATEGORY "] " FMT, __VA_ARGS__); \
+        tprintf("[%][%][%] " FMT, Build::debugTimestamp(), Build::getIteration(), CATEGORY, __VA_ARGS__); \
     } \
 } while (0)
 
 #endif // build_h
+
+
+

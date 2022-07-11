@@ -6,9 +6,9 @@
 #include <sstream>
 #include <regex>
 
-// XXX multiply defined symbols...?
-//#include "build.h"
 #include "build.cpp"
+
+#define ARRAY_LENGTH(X) (sizeof(X)/sizeof((X)[0]))
 
 using namespace std;
 
@@ -106,9 +106,9 @@ bool _copy_gen(const string& name) {
         printDebug("cmd", "copy(%, %)\n", from, to);
     } else {
         if (Build::debugEnabled("cmd")) {
-            Build::Map::const_iterator i = Build::ALL.find(name);
+            Build::Entry* e = Build::get(name);
             // ventures are expected to fail sometimes
-            if (i != Build::ALL.end() && !i->second->isVenture) {
+            if (e && !e->isVenture) {
                 printDebug("cmd", "failed copy(%, %)\n", from, to);
             }
         }
@@ -136,8 +136,8 @@ void replaceExt(string& s, const char* find, const char* replace) {
     s.replace(s.rfind(find), strlen(find), replace);
 }
 
-Set<string> replaceExt(const Set<string>& in, const char* find, const char* replace) {
-    Set<string> out;
+set<string> replaceExt(const set<string>& in, const char* find, const char* replace) {
+    set<string> out;
     //todo - investigate auto&& vs modifying
     fora (i, in) {
         string s(i);
@@ -182,7 +182,7 @@ bool generateObj(const string& name) {
 }
 
 bool generateExe(const string& name) {
-    Build::Entry* e = Build::ALL[name]; // todo? avoid grabbing from global?
+    Build::Entry* e = Build::get(name);
     ostringstream cmd;
     cmd << "link /nologo /OUT:" << name;
     forc (it, e->dependsOn) { cmd << " " << it->name; }
@@ -202,73 +202,90 @@ bool hasGenerationFunction(const string& name) {
         ;
 }
 
-// the char*s in the incs set are newly allocated by this function
-void _findIncludes(const char* name, Set<char*>* incs) {
-    Set<char*> local;
-    {
-        FILE* fp = fopen(name, "r");
-        if (!fp) {
-            printError("failed to open %: %", name, strerror(errno));
-            return;
-        }
+void _findIncludes(const string& filename, set<string>* incs, const regex& pattern, match_results<const char*>& matches, int* depth, set<string>* seen, const char* debugRootFile, int serial, char* lineTextBuf, size_t lineTextLen) {
 
-        // can't do this without extra logic for handling failure to get library headers, like stdio.h
-        //regex pattern("#\\s*include\\s+[<\"](.+)[>\"]\\s*\n");
+    if (seen->find(filename) == seen->end()) {
+        seen->insert(filename);
+        printDebug("seen", "[serial %] first time seeing % (under %)\n", serial, filename, debugRootFile);
+    } else {
+        printDebug("seen", "[serial %] have already seen % (under %), not searching it for includes\n", serial, filename, debugRootFile);
+        return;
+    }
 
-        // at least for now, assume that files we want to look at are double-quoted,
-        // and files we don't want to look at are angle-bracketed
-        regex pattern("#\\s*include\\s+\"(.+)\"\\s*\n");
+    static const int MAX_DEPTH = 1000;
+    (*depth) += 1;
+    if (*depth > MAX_DEPTH) {
+        printError("runaway recursion in 'findIncludes' function - nested more than % times - serial % - seen has % entries: %", MAX_DEPTH, serial, seen->size(), *seen);
+        exit(EXIT_FAILURE);
+    }
 
-        char buf[128];
+    set<string> local;
+    if (FILE* fp = fopen(filename.c_str(), "r")) {
+        int status;
+        unsigned int lineNumber = 0;
         while (1) {
-            fgets(buf, sizeof(buf), fp);
+            ++lineNumber;
+            fgets(lineTextBuf, lineTextLen, fp);
             if (feof(fp)) break;
             if (ferror(fp)) {
-                printError("fgets failed");
+                printError("fgets failed on line % of file %", lineNumber, filename);
             } else {
-                match_results<const char*> matches;
-                //printDebug("findIncsLine", "%", buf);
-                if (regex_match(buf, matches, pattern)) {
-                    //printDebug("findIncsMatch", "% includes %\n", name, match[1]);
-                    // there are no match_results/regex_match overloads that allow non-const,
-                    // and apparently unordered_set::find can't handle const char* when it contains just char*
-                    // and char* match = const_cast<char*>(matches[1].str().c_str()) was returning an empty string
-                    // so just copy it back out into buf so it's actually usable
-                    strncpy(buf, matches[1].str().c_str(), sizeof(buf)); 
-                    if (local.find(buf) == local.end()) {
-                        size_t n = strlen(buf) + 1; // + 1 for null
-                        char* s = (char*) malloc(n); // leak
-                        memcpy(s, buf, n);
-                        bool added = local.insert(s).second;
-                        assert(added);
+
+                if (regex_match(lineTextBuf, matches, pattern)) {
+                    assert(matches.size() > 1); // full + capture group
+                    string s = matches[1].str();
+                    printDebug("regex_match", "matched on line % of file %: include file = %, full line text = %\n", lineNumber, filename, s, lineTextBuf);
+                    bool added = local.insert(s).second;
+                    if (!added) {
+                        printDebug("test", "[serial %] % was not inserted for % (depth %, base = %)\n", serial, s, filename, *depth, debugRootFile);
                     }
                 }
             }
         }
 
         fclose(fp);
-    }
-    printDebug("findIncludes", "% += %\n", name, local);
-    fora (it, local) {
-        incs->insert(it);
-        if (Build::fileExists(it)) {
-            _findIncludes(it, incs);
+       
+        printDebug("findIncludes", "% += %\n", filename, local);
+        fora (s, local) {
+            incs->insert(s); // TODO if it's already in the map, do I need to check it again?  or I guess 'seen' covers that more completely anyway
+            if (/*!contains(*seen, s)*/ seen->find(s) == seen->end() && // XXX do I need this twice?  see entry of this function
+                Build::fileExists(s)) {
+                   
+                _findIncludes(s, incs, pattern, matches, depth, seen, debugRootFile, serial,
+                    //matches, matchesLen,
+                    lineTextBuf  , lineTextLen);
+            }
         }
+
+    } else {
+        printError("failed to open %: %", filename, strerror(errno));
     }
+   
+    (*depth) -= 1;
 }
 
-Set<char*> findIncludes(const string& name) {
-    Set<char*> incs;
-    _findIncludes(name.c_str(), &incs);
-    /*if (incs.size() > 0) {*/ printDebug("findIncs", "% includes %\n", name, incs); //}
-    return incs;
+void findIncludes(const string& filename, set<string>* incs) {
+    static int serial = 0;
+    ++serial;
+
+    const regex pattern("^\\s*#\\s*include\\s*\"(.+)\"\\s*\n$");
+    match_results<const char*> matches;
+    char lineTextBuf[256];
+    int depth = 0;
+    set<string> seen;
+
+    _findIncludes(filename, incs, pattern, matches, &depth, &seen, filename.c_str(), serial, lineTextBuf, ARRAY_LENGTH(lineTextBuf));
+
+    printDebug("findIncs", "[serial %] % includes %\n", serial, filename, *incs);
 }
 
 Build::GenerationFunction determineGenerationFunction(const string& name) {
     Build::GenerationFunction fn;
     if (endsWith(name, EXT_HDR)) {
+        //TODO not all .h can be generated in this example - look for 'Gen' in name
         fn = &generateInc;
     } else if (endsWith(name, EXT_SRC)) {
+        //TODO not all .c can be generated in this example - look for 'Gen' in name
         fn = &generateSrc;
     } else if (endsWith(name, EXT_OBJ)) {
         fn = &generateObj;
@@ -282,116 +299,165 @@ Build::GenerationFunction determineGenerationFunction(const string& name) {
     return fn;
 }
 
-Set<string> determineDepsForObj(const string& target) {
+set<string> determineDepsForObj(const string& target) {
     string base = Build::getBase(target);
-    Set<string> deps;
+    set<string> deps;
     string src = base + EXT_SRC;
     deps.insert(src);
     // Is this the right spot to have this?
     if (Build::fileExists(src)) { // might be generated
-        Set<char*> incs = findIncludes(src);
+        set<string> incs;
+        findIncludes(src, &incs);
         forc (it, incs) { deps.insert(it); }
     }
     return deps;
 }
 
-Set<string> determineDepsForSrc(const string& target) {
+set<string> determineDepsForSrc(const string& target) {
     // nothing now, maybe something for .idl
-    Set<string> deps;
+    set<string> deps;
     return deps;
 }
 
-Set<string> determineDepsForHdr(const string& target) {
+set<string> determineDepsForHdr(const string& target) {
     // nothing now, maybe something for .idl
-    Set<string> deps;
+    set<string> deps;
     return deps;
 }
 
-Set<string> determineDepsForExe(const string& target) {
+static void makeEntryString(set<string>* out, Build::Map const& in) {
+    out->clear();
+    static const char genstring[] = {'?', '!', '.'};
+    char buf[128];
+    for (Build::Map::const_iterator i = in.begin(); i != in.end(); ++i) {
+        snprintf(buf, sizeof buf, "%-20s  %c  %c", i->first.c_str(), genstring[i->second->generationResult+1], i->second->isVenture?'v':' ');
+        out->insert(string(buf));
+    }
+}
+
+static void writeToFile(int iteration, int loop, const char* detail, const set<string>& s) {
+    static int serial = 0;
+    ++serial;
+    char filename[64];
+    snprintf(filename, sizeof filename, "looptest_%d_%d_%d_%s.txt", serial, iteration, loop, detail);
+    FILE* file = fopen(filename, "w");
+    if (file) {
+        fprintf(file, "%s\n", filename);
+        for (set<string>::const_iterator i = s.begin(); i != s.end(); ++i) {
+            fprintf(file, "%s\n", i->c_str());
+        }
+        fprintf(file, "%llu entries\n", s.size());
+        fclose(file);
+    }
+}
+
+set<string> determineDepsForExe(const string& target) {
     string base = Build::getBase(target);
-    Set<string> deps;
+    set<string> deps;
     deps.insert(base + EXT_OBJ);
 
-    // Just saying that an exe depends on all known objects.  To make it equivalent to the original logic in main build loop, would just need to add "if (BUILD->target0 == target) {" (where target0 is the top-level original target passed to build (like type0))
+    // Just saying that an exe depends on all known objects.
 
-    // This could be optimized to not look through everything in ALL (user hook when a new Build::Entry is added to ALL)
-
-    //if (type0 == TYPE_EXE) {
-    Set<string> allObjs;
-    forc (it, Build::ALL) {
-        // might want to add file extension into the entry, though won't work for exes.  maybe ask user code to provide an integer for the type when adding it.  then the user doesn't have to strcmp every time later like this.
+    set<string> allObjs;
+    forc (it, Build::getAll()) {
+        char* _disp = 0;
+        // a user-defined file type enum (OBJ, SRC, EXE) that's stored in the Entry might help here
         if (endsWith(it.first, EXT_OBJ)) {
             // do not (re)add previously-failed ventures to exe deps
             if (it.second->isVenture) {
                 if (it.second->generationResult != Build::GEN_FAIL) {
                     allObjs.insert(it.first);
+                    _disp = "non-failed venture";
                 } else {
                     printDebug("venture", "ignoring previously-failed venture %\n", it.first);
+                    _disp = "previously-failed venture";
                 }
             } else {
                 allObjs.insert(it.first);
+                _disp = "regular object (not a venture)";
             }
         }
+
+        //if (_disp) { printDebug("extra", "% -- %\n", _disp, it.first.c_str()); }
     }
 
     Build::addDependsOn(target, allObjs);
-    forc (i, allObjs) { Build::addDependants(i, Set<string>{target}); }
+    forc (i, allObjs) { Build::addDependants(i, set<string>{target}); }
 
-    forc (i, allObjs) {
-        Build::Entry* e = Build::ALL[i];
-        if (e->isVenture) {
-            // XXX 2022-01-21 - kind of confused about this
-            fora (d, e->dependsOn) {
-                d->isVenture = true;
-            }
-        }
-    }
-
-    // ventures
     {
-        Set<string> existing;
-        Set<string> ventures;
-        forc (it, Build::ALL) {
-            if (endsWith(it.first, EXT_HDR)) {
-                string name = it.first;
-                replaceExt(name, EXT_HDR, EXT_SRC); // genChain->next
-                if (Build::ALL.find(name) == Build::ALL.end()) {
+        set<string> sBefore;
+        set<string> sAfter;
+        makeEntryString(&sBefore, Build::getAll());
+        size_t nBefore = Build::getAll().size();
+        size_t nAfter;
+        int loop = 0;
+        while (1) {
+            if (loop++ > 1000) {
+                printError("runaway looptest");
+                break;
+            }
+           
+            set<string> existing;
+            set<string> ventures;
+           
+            forc (it, Build::getAll()) {
+                if (endsWith(it.first, EXT_HDR)) {
+                    
+                    string name = it.first;
+                    replaceExt(name, EXT_HDR, EXT_SRC); // genChain->next
                     bool exists = Build::fileExists(name);
                     if (exists) {
-                        printDebug("existing", "% is not known but already exists\n", name);
+                        printDebug("exedeps", "% already exists - adding to known existing list\n", name);
                         existing.insert(name);
                     } else if (hasGenerationFunction(name)) {
-                        printDebug("ld", "% is not known and does not exist, but it has a generation function\n", name);
+                        printDebug("exedeps", "% does not exist, but it has a generation function - adding to venture list\n", name);
                         ventures.insert(name);
                     } else {
-                        printDebug("ld", "% is not known and does not exist and does not have a generation function\n", name);
+                        printDebug("exedeps", "% does not exist and does not have a generation function - ignoring\n", name);
                     }
                 }
             }
-        }
 
-        if (existing.size() > 0) {
-            Set<string> objs = replaceExt(existing, EXT_SRC, EXT_OBJ);
+            set<string> objs = replaceExt(existing, EXT_SRC, EXT_OBJ);
             printDebug("existing", "adding % objs that have existing srcs: %\n", objs.size(), objs);
-            forc (it, objs) { Build::add(it); }
+            forc (it, objs) {
+                Build::addIfMissing(it);
+                deps.insert(it);
+            }
+
+            printDebug("venture", "adding % src ventures: %\n", ventures.size(), ventures);
+            forc (it, ventures) {
+                if (!Build::get(it)) {
+                    Build::Entry* e = Build::add(it);
+                    e->isVenture = true;
+                }
+            }
+            objs = replaceExt(ventures, EXT_SRC, EXT_OBJ);
+            printDebug("venture", "adding % obj ventures: %\n", objs.size(), objs);
+            forc (it, objs) {
+                if (!Build::get(it)) {
+                    Build::Entry* e = Build::add(it);
+                    e->isVenture = true;
+                }
+                // todo? adding these venture objs to 'deps' causes premature exe generation attempt
+            }
+
+            nAfter = Build::getAll().size();
+            printDebug("looptest", "target %, loop %, nBefore = %, nAfter = %\n", target, loop, nBefore, nAfter);
+            if (nBefore == nAfter) {
+                break;
+            } else {
+                nBefore = nAfter;
+
+                makeEntryString(&sAfter, Build::getAll());
+                writeToFile(Build::getIteration(), loop, "before", sBefore);
+                writeToFile(Build::getIteration(), loop, "after", sAfter);
+                makeEntryString(&sBefore, Build::getAll());
+            }
         }
-        if (ventures.size() > 0) {
-            printDebug("venture", "adding % src venture%: %\n", ventures.size(), ventures.size()==1?"":"s", ventures);
-            forc (it, ventures) { Build::add(it); }
-            forc (it, ventures) { Build::ALL[it]->isVenture = true; }
-            Set<string> objs = replaceExt(ventures, EXT_SRC, EXT_OBJ);
-            printDebug("venture", "adding % obj venture%: %\n", objs.size(), objs.size()==1?"":"s", objs);
-            forc (it, objs) { Build::add(it); }
-            forc (it, objs) { Build::ALL[it]->isVenture = true; }
-        }
-        //if (existing.size() == 0 && ventures.size() == 0) {
-        //    printDebug("ld", "done\n");
-        //    doneLD = true;
-        //}
     }
 
-
-    return deps; // XXX seems like I should be adding more of the above to this, instead of going to ALL directly
+    return deps;
 }
 
 Build::DependencyFunction determineDependencyFunction(const string& name) {
@@ -413,19 +479,22 @@ Build::DependencyFunction determineDependencyFunction(const string& name) {
 }
 
 int main(int argc, char** argv) {
-    
+
     int i;
     for (i = 1; i < argc; ++i) {
-        if (argv[i][0] == '-') {
-            if (argv[i][1] == 'd') {
+        char* arg = argv[i];
+        if (arg && strlen(arg) > 1 && arg[0] == '-' && arg[1] == 'd') {
+            if (i < argc-1) {
                 ++i;
                 Build::loadDebug(argv[i]);
+            } else {
+                printError("option '-d' needs an argument");
             }
         } else {
             break;
         }
     }
-    
+
     Build::UserCode userCode;
     userCode.getGenerationFunction = &determineGenerationFunction;
     userCode.getDependencyFunction = &determineDependencyFunction;
@@ -434,6 +503,7 @@ int main(int argc, char** argv) {
         try {
             Build::run(argv[i], &userCode);
         } catch (const exception& e) {
+            // only to catch exceptions potentially thrown by C++ stdlib
             printError("caught exception during % generation: %",
                     argv[i], e.what());
         }
