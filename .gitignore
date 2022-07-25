@@ -5,3 +5,4 @@
 *.ilk
 *.rdbg
 example/*Gen*
+example/looptest*.txt
