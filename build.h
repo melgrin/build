@@ -100,6 +100,8 @@ namespace Build {
 
     bool hasGenerationFunction(const std::string& name);
 
+    void printUsage();
+
 #ifdef DEBUG
     char* debugTimestamp();
 #endif

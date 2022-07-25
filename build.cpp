@@ -345,6 +345,16 @@ bool shouldGenerate(Entry* e) {
     return result;
 }
 
+void printUsage() {
+    std::cout
+        << "build [-h] [-d category] <target>\n"
+        << "  -h  Print this help message.\n"
+        << "  -d  Specify a debug logging category.\n"
+        << "      Use '-d all' to see all categories.\n"
+        << "      Use '-d all,-X' to see all categories except for 'X'.\n"
+        ;
+}
+
 #ifdef DEBUG
 char* debugTimestamp() { // This is not thread safe because it uses a static char buffer
     // 11:22:33.123456

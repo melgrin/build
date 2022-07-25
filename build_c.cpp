@@ -483,7 +483,10 @@ int main(int argc, char** argv) {
     int i;
     for (i = 1; i < argc; ++i) {
         char* arg = argv[i];
-        if (arg && strlen(arg) > 1 && arg[0] == '-' && arg[1] == 'd') {
+        if (arg && strlen(arg) > 1 && arg[0] == '-' && arg[1] == 'h') {
+            Build::printUsage();
+            return 0;
+        } else if (arg && strlen(arg) > 1 && arg[0] == '-' && arg[1] == 'd') {
             if (i < argc-1) {
                 ++i;
                 Build::loadDebug(argv[i]);
