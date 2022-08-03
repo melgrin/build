@@ -2,9 +2,7 @@
 
 A tool combining dependency lookup and dependency generation.
 
-C++ only.
-
-Test project!
+Test project!  Currently implemented only for C programs on Windows.
 
 ### Description
 
